@@ -29,6 +29,7 @@ class IntentGlideOrchestrator:
         self.motion.reset()
         self.fixed.reset()
         self.adaptive.reset()
+        self.intent.reset()
 
     def set_mode(self, mode: str):
         if mode not in self.MODES:
@@ -59,6 +60,7 @@ class IntentGlideOrchestrator:
             decision = self.intent.decide(
                 raw_x=sample.x, raw_y=sample.y, filtered=adaptive_output,
                 features=features, targets=targets, override=False,
+                timestamp=sample.timestamp,
             )
             output = apply_assistance(adaptive_output, decision)
 

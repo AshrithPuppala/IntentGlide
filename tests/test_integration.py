@@ -37,3 +37,11 @@ def test_reset_and_filter_source_reported():
     result = pipeline.process(SyntheticInput().get_sample())
     assert result["filter_source"] == "heuristic"
     pipeline.reset()
+
+def test_orchestrator_reset_clears_intent_history():
+    pipeline = IntentGlideOrchestrator()
+    for sample in [SyntheticInput().get_sample() for _ in range(5)]:
+        pipeline.process(sample, targets=make_targets("standard", 900, 600))
+    assert pipeline.intent._history
+    pipeline.reset()
+    assert not pipeline.intent._history
