@@ -1,200 +1,57 @@
+"""
+Real-time kinematic and spectral feature extractor (Person 2).
+Resamples jittery mouse/synthetic timestamps onto a uniform grid and extracts
+4-12 Hz tremor power, sub-bin dominant frequency, spectral entropy, and kinematics.
+"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import math
 from collections import deque
-from typing import Optional, Tuple
-
+from typing import Deque, Optional
 import numpy as np
-from scipy.signal import detrend
 
 from shared.contracts import InputSample, MotionFeatures
-
-_EPS = 1e-9
-_EDGE_TRIM = 3  # samples dropped at each end of finite-difference estimates
 
 
 class MotionAnalyzer:
     def __init__(
         self,
         window_sec: float = 1.0,
-        grid_points: int = 120,
-        min_span_sec: float = 0.5,
-        tremor_band: Tuple[float, float] = (4.0, 12.0),
-        analysis_band: Tuple[float, float] = (2.0, 20.0),
-        amp_gate_px: float = 2.0,
-        min_freq_amp_px: float = 0.1,
-        velocity_horizon_sec: float = 0.05,
+        min_window_sec: float = 0.5,
+        resample_n: int = 128,
+        tremor_band: tuple[float, float] = (4.0, 12.0),
+        analysis_band: tuple[float, float] = (2.0, 20.0),
+        amp_gate_px: float = 1.5,
+        speed_window_sec: float = 0.05,
     ):
         self.window_sec = window_sec
-        self.grid_points = grid_points
-        self.min_span_sec = min_span_sec
-        self.band = tremor_band
-        self.analysis_band = analysis_band
+        self.min_window_sec = min_window_sec
+        self.resample_n = resample_n
+        self.tremor_lo, self.tremor_hi = tremor_band
+        self.ana_lo, self.ana_hi = analysis_band
         self.amp_gate_px = amp_gate_px
-        self.min_freq_amp_px = min_freq_amp_px
-        self.velocity_horizon_sec = velocity_horizon_sec
+        self.speed_window_sec = speed_window_sec
 
-        self._t: deque = deque()
-        self._x: deque = deque()
-        self._y: deque = deque()
+        self._hann = np.hanning(resample_n)
+        self._t: Deque[float] = deque()
+        self._x: Deque[float] = deque()
+        self._y: Deque[float] = deque()
+        self._last_source: Optional[str] = None
         self._last: MotionFeatures = self._default_features()
 
-    # ------------------------------------------------------------------ API
     def reset(self) -> None:
-        """Clear all state (new trial, or input source switched)."""
+        """Clear sample buffer for a new trial or source switch."""
         self._t.clear()
         self._x.clear()
         self._y.clear()
+        self._last_source = None
         self._last = self._default_features()
 
-    def update(self, s: InputSample) -> MotionFeatures:
-        t, x, y = float(s.timestamp), float(s.x), float(s.y)
-
-        # Ignore bad samples: NaN/inf, duplicate or backwards timestamps.
-        if not (math.isfinite(t) and math.isfinite(x) and math.isfinite(y)):
-            return self._last
-        if self._t and t <= self._t[-1]:
-            return self._last
-
-        self._t.append(t)
-        self._x.append(x)
-        self._y.append(y)
-
-        # Keep one sample at/before the window start so we can interpolate to it.
-        cutoff = t - self.window_sec
-        while len(self._t) >= 2 and self._t[1] <= cutoff:
-            self._t.popleft()
-            self._x.popleft()
-            self._y.popleft()
-
-        span = self._t[-1] - self._t[0]
-        if len(self._t) < 4 or span < self.min_span_sec:
-            self._last = self._default_features()
-        else:
-            self._last = self._extract_features()
-        return self._last
-
-    # ------------------------------------------------------------ internals
-    def _current_speed(self) -> float:
-        """Speed over the last ~velocity_horizon_sec of raw samples (px/s)."""
-        n = len(self._t)
-        if n < 2:
-            return 0.0
-        t = np.fromiter(self._t, float, n)
-        i = int(np.searchsorted(t, t[-1] - self.velocity_horizon_sec, side="right")) - 1
-        i = min(max(i, 0), n - 2)
-        dt = t[-1] - t[i]
-        if dt <= 0:
-            return 0.0
-        return float(math.hypot(self._x[-1] - self._x[i], self._y[-1] - self._y[i]) / dt)
-
-    def _extract_features(self) -> MotionFeatures:
-        n_raw = len(self._t)
-        t_raw = np.fromiter(self._t, float, n_raw)
-        x_raw = np.fromiter(self._x, float, n_raw)
-        y_raw = np.fromiter(self._y, float, n_raw)
-
-        # 1. Resample onto a uniform grid over the (up to) last window_sec.
-        N = self.grid_points
-        t_end = t_raw[-1]
-        t_start = max(t_raw[0], t_end - self.window_sec)
-        dt = (t_end - t_start) / (N - 1)
-        if dt <= 0:
-            return self._default_features()
-        t_uni = np.linspace(t_start, t_end, N)
-        x_uni = np.interp(t_uni, t_raw, x_raw)
-        y_uni = np.interp(t_uni, t_raw, y_raw)
-
-        # 2. Kinematics from finite differences on the uniform grid.
-        vx, vy = np.gradient(x_uni, dt), np.gradient(y_uni, dt)
-        ax, ay = np.gradient(vx, dt), np.gradient(vy, dt)
-        jx, jy = np.gradient(ax, dt), np.gradient(ay, dt)
-        v_mag = np.hypot(vx, vy)
-        sl = slice(_EDGE_TRIM, -_EDGE_TRIM)
-        acceleration = float(np.mean(np.hypot(ax, ay)[sl]))
-        jerk = float(np.mean(np.hypot(jx, jy)[sl]))
-
-        # Speed-weighted directional consistency: |sum v| / sum |v|  (0..1).
-        # Straight movement -> ~1; back-and-forth oscillation -> ~0; still -> 0.
-        dir_consistency = float(
-            np.clip(math.hypot(vx.sum(), vy.sum()) / (v_mag.sum() + _EPS), 0.0, 1.0)
-        )
-
-        # 3. Spectrum: detrend (removes drift/ramp), Hann window, rFFT.
-        win = np.hanning(N)
-        X = np.fft.rfft(detrend(x_uni, type="linear") * win)
-        Y = np.fft.rfft(detrend(y_uni, type="linear") * win)
-        freqs = np.fft.rfftfreq(N, d=dt)
-        nyq = 0.5 / dt
-
-        # |FFT|^2 -> sinusoid-equivalent px^2 (Hann: sum(w^2)=3N/8, one-sided).
-        scale = 32.0 / (3.0 * N * N)
-        px = (np.abs(X) ** 2) * scale
-        py = (np.abs(Y) ** 2) * scale
-        P = px + py
-
-        lo, hi = self.band
-        a_lo, a_hi = self.analysis_band
-        band_mask = (freqs >= lo) & (freqs <= min(hi, nyq))
-        ana_mask = (freqs >= a_lo) & (freqs <= min(a_hi, nyq))
-        if band_mask.sum() < 2 or ana_mask.sum() < 2:
-            return self._default_features()
-
-        x_band = float(px[band_mask].sum())
-        y_band = float(py[band_mask].sum())
-        band_p = x_band + y_band
-        ana_p = float(P[ana_mask].sum())
-        est_amp = math.sqrt(band_p)
-
-        # 4. Oscillation score = in-band share of analysis-band power * amplitude gate.
-        ratio = band_p / ana_p if ana_p > 1e-6 else 0.0
-        gate = min(max(est_amp / self.amp_gate_px, 0.0), 1.0)
-        osc_score = float(np.clip(ratio * gate, 0.0, 1.0))
-
-        # 5. Dominant frequency (parabolic peak interpolation) + periodicity.
-        dominant: Optional[float] = None
-        periodicity = 0.0
-        if est_amp >= self.min_freq_amp_px and band_p > _EPS:
-            idx = np.flatnonzero(band_mask)
-            peak = int(idx[np.argmax(P[idx])])
-            df = freqs[1] - freqs[0]
-            delta = 0.0
-            if 0 < peak < len(P) - 1:
-                a, b, c = (math.log(P[k] + _EPS) for k in (peak - 1, peak, peak + 1))
-                denom = a - 2.0 * b + c
-                if denom < 0:
-                    delta = float(np.clip(0.5 * (a - c) / denom, -0.5, 0.5))
-            dominant = float(freqs[peak] + delta * df)
-            # Hann spreads a sine over ~3 bins, so count peak +/- 1 bin.
-            periodicity = float(
-                np.clip(P[max(peak - 1, 0): peak + 2].sum() / band_p, 0.0, 1.0)
-            )
-
-        # 6. Spectral entropy over the analysis band (0 = one tone, 1 = flat).
-        pa = P[ana_mask]
-        entropy = 0.0
-        if pa.sum() > 1e-6 and len(pa) > 1:
-            p = pa / pa.sum()
-            p = p[p > 0]
-            entropy = float(-(p * np.log2(p)).sum() / math.log2(len(pa)))
-            entropy = float(np.clip(entropy, 0.0, 1.0))
-
-        return MotionFeatures(
-    oscillation_score=float(np.clip(osc_score, 0.0, 1.0)),
-    dominant_frequency=dominant,
-    periodicity_confidence=float(np.clip(periodicity, 0.0, 1.0)),
-    directional_consistency=float(np.clip(dir_consistency, 0.0, 1.0)),
-    velocity=self._current_speed(),
-    acceleration=acceleration,
-    jerk=jerk,
-    spectral_entropy=float(np.clip(entropy, 0.0, 1.0)),
-    est_amplitude=float(est_amp),
-    x_band_power=x_band,
-    y_band_power=y_band,
-    valid=True,
-)
-
     def _default_features(self) -> MotionFeatures:
-        """Neutral output during warm-up. valid=False; dir. consistency 0 (not 'smooth')."""
+        """Neutral output during warm-up. All numeric fields initialized to finite values."""
         return MotionFeatures(
             oscillation_score=0.0,
             dominant_frequency=None,
@@ -210,22 +67,195 @@ class MotionAnalyzer:
             valid=False,
         )
 
+    def _current_speed(self) -> float:
+        """Instantaneous speed over a short recent window (~50 ms) for fast flick response."""
+        if len(self._t) < 2:
+            return 0.0
+        t_now = self._t[-1]
+        idx = len(self._t) - 2
+        while idx > 0 and (t_now - self._t[idx]) < self.speed_window_sec:
+            idx -= 1
+        dt = t_now - self._t[idx]
+        if dt <= 1e-6:
+            return 0.0
+        dx = self._x[-1] - self._x[idx]
+        dy = self._y[-1] - self._y[idx]
+        return float(math.hypot(dx, dy) / dt)
 
-if __name__ == "__main__":
-    # Self-test (run from repo root):  python -m dsp.motion_analyzer
-    import time
+    def update(self, s: InputSample) -> MotionFeatures:
+        # Guard against NaN / Inf inputs
+        if not (math.isfinite(s.x) and math.isfinite(s.y) and math.isfinite(s.timestamp)):
+            return self._last
 
-    fs, amp, f_t = 120.0, 15.0, 8.0
-    analyzer = MotionAnalyzer()
-    feats = None
-    t0 = time.perf_counter()
-    n = int(1.5 * fs)
-    for i in range(n):
-        t = i / fs
-        feats = analyzer.update(
-            InputSample(t, 300 + 100 * t + amp * math.sin(2 * math.pi * f_t * t), 200, "synthetic")
+        # Auto-reset if InputManager switches source (e.g. "mouse" <-> "synthetic")
+        if self._last_source is not None and s.source != self._last_source:
+            self.reset()
+
+        # Ignore out-of-order or duplicate timestamps
+        if self._t and s.timestamp <= self._t[-1]:
+            return self._last
+
+        self._last_source = s.source
+        self._t.append(s.timestamp)
+        self._x.append(s.x)
+        self._y.append(s.y)
+
+        # Evict samples older than window_sec
+        cutoff_t = s.timestamp - self.window_sec
+        while len(self._t) > 2 and self._t[0] < cutoff_t:
+            self._t.popleft()
+            self._x.popleft()
+            self._y.popleft()
+
+        span = self._t[-1] - self._t[0]
+        if span < self.min_window_sec or len(self._t) < 16:
+            self._last = self._default_features()
+            return self._last
+
+        self._last = self._extract_features(span)
+        return self._last
+
+    def _extract_features(self, span: float) -> MotionFeatures:
+        N = self.resample_n
+        t_raw = np.fromiter(self._t, dtype=np.float64, count=len(self._t))
+        x_raw = np.fromiter(self._x, dtype=np.float64, count=len(self._x))
+        y_raw = np.fromiter(self._y, dtype=np.float64, count=len(self._y))
+
+        # 1. Uniform time-grid interpolation
+        t_uni = np.linspace(t_raw[0], t_raw[-1], N)
+        dt = (t_raw[-1] - t_raw[0]) / (N - 1)
+        if dt <= 0:
+            return self._default_features()
+
+        x_uni = np.interp(t_uni, t_raw, x_raw)
+        y_uni = np.interp(t_uni, t_raw, y_raw)
+
+        # 2. Kinematics via finite differences
+        vx = np.gradient(x_uni, dt)
+        vy = np.gradient(y_uni, dt)
+        speeds = np.hypot(vx, vy)
+
+        ax = np.gradient(vx, dt)
+        ay = np.gradient(vy, dt)
+        accels = np.hypot(ax, ay)
+
+        jx = np.gradient(ax, dt)
+        jy = np.gradient(ay, dt)
+        jerks = np.hypot(jx, jy)
+
+        tail = max(4, N // 8)
+        acceleration = float(np.mean(accels[-tail:]))
+        jerk = float(np.mean(jerks[-tail:]))
+
+        # Directional consistency over recent quarter-window
+        q = max(8, N // 4)
+        path_len = float(np.sum(speeds[-q:]) * dt)
+        net_disp = float(math.hypot(x_uni[-1] - x_uni[-q], y_uni[-1] - y_uni[-q]))
+        dir_consistency = float(np.clip(net_disp / (path_len + 1e-6), 0.0, 1.0)) if path_len > 0.5 else 0.0
+
+        # 3. Polynomial detrending (degree 2)
+        # Removes linear ramps and smooth minimum-jerk curves without attenuating 4-12 Hz tremor oscillations
+        # 3. Polynomial detrending (degree 3)
+        # Removes linear ramps and smooth minimum-jerk curves without attenuating 4-12 Hz tremor oscillations
+        t_norm = np.linspace(-1.0, 1.0, N)
+        poly_x = np.poly1d(np.polyfit(t_norm, x_uni, 3))
+        poly_y = np.poly1d(np.polyfit(t_norm, y_uni, 3))
+        x_det = (x_uni - poly_x(t_norm)) * self._hann
+        y_det = (y_uni - poly_y(t_norm)) * self._hann
+
+        # 4. Sinusoid-calibrated rFFT power spectrum
+        # Coherent power scale factor for Hann window: (2.0 / sum(w))^2 = 16.0 / (N * N)
+        freqs = np.fft.rfftfreq(N, d=dt)
+        scale = 16.0 / (N * N)
+
+        X = np.fft.rfft(x_det)
+        Y = np.fft.rfft(y_det)
+        px = (np.abs(X) ** 2) * scale
+        py = (np.abs(Y) ** 2) * scale
+        P = px + py
+
+        band_mask = (freqs >= self.tremor_lo) & (freqs <= self.tremor_hi)
+        ana_mask = (freqs >= self.ana_lo) & (freqs <= self.ana_hi)
+
+        if band_mask.sum() < 2 or ana_mask.sum() < 2:
+            return self._default_features()
+
+        band_indices = np.where(band_mask)[0]
+        pb = P[band_indices]
+        peak_rel = int(np.argmax(pb))
+        peak = int(band_indices[peak_rel])
+
+        # Sum 3-bin main lobe around peak; for Hann window, the 3-bin sum contains 1.5x of peak A^2
+        lobe_lo = max(band_indices[0], peak - 1)
+        lobe_hi = min(band_indices[-1] + 1, peak + 2)
+
+        x_band = float(np.sum(px[lobe_lo:lobe_hi]) / 1.5)
+        y_band = float(np.sum(py[lobe_lo:lobe_hi]) / 1.5)
+        band_p = x_band + y_band
+        est_amp = float(math.sqrt(max(band_p, 0.0)))
+
+        # Total power in the analysis band (2 - 20 Hz)
+        total_ana_p = float(np.sum(P[ana_mask]) / 1.5) + 1e-9
+
+        if est_amp < 1e-3 or band_p < 1e-6:
+            return MotionFeatures(
+                oscillation_score=0.0,
+                dominant_frequency=None,
+                periodicity_confidence=0.0,
+                directional_consistency=dir_consistency,
+                velocity=self._current_speed(),
+                acceleration=acceleration,
+                jerk=jerk,
+                spectral_entropy=0.0,
+                est_amplitude=0.0,
+                x_band_power=0.0,
+                y_band_power=0.0,
+                valid=True,
+            )
+
+        # Parabolic log-power peak interpolation for sub-bin dominant frequency
+        df = freqs[1] - freqs[0]
+        if 0 < peak < len(P) - 1 and P[peak - 1] > 0 and P[peak] > 0 and P[peak + 1] > 0:
+            a = math.log(P[peak - 1] + 1e-12)
+            b = math.log(P[peak] + 1e-12)
+            c = math.log(P[peak + 1] + 1e-12)
+            denom = a - 2.0 * b + c
+            delta = 0.5 * (a - c) / denom if abs(denom) > 1e-9 else 0.0
+            delta = max(-0.5, min(0.5, delta))
+            dominant = float(freqs[peak] + delta * df)
+        else:
+            dominant = float(freqs[peak])
+
+        total_in_band = float(np.sum(pb) / 1.5) + 1e-9
+        periodicity = float(np.clip(band_p / total_in_band, 0.0, 1.0))
+
+        # Spectral entropy across 2-20 Hz analysis band
+        pa = P[ana_mask]
+        pa_sum = float(np.sum(pa))
+        if pa_sum > 1e-6 and len(pa) > 1:
+            p_norm = pa / pa_sum
+            p_pos = p_norm[p_norm > 0]
+            entropy = float(-(p_pos * np.log2(p_pos)).sum() / math.log2(len(pa)))
+            entropy = float(np.clip(entropy, 0.0, 1.0))
+        else:
+            entropy = 0.0
+
+        # Oscillation score: band power ratio gated by physical amplitude
+        raw_ratio = float(np.clip(band_p / max(total_ana_p, band_p), 0.0, 1.0))
+        amp_gate = float(np.clip((est_amp - 0.5) / max(self.amp_gate_px, 0.5), 0.0, 1.0))
+        osc_score = float(np.clip(raw_ratio * amp_gate, 0.0, 1.0))
+
+        return MotionFeatures(
+            oscillation_score=osc_score,
+            dominant_frequency=dominant,
+            periodicity_confidence=periodicity,
+            directional_consistency=dir_consistency,
+            velocity=self._current_speed(),
+            acceleration=acceleration,
+            jerk=jerk,
+            spectral_entropy=entropy,
+            est_amplitude=est_amp,
+            x_band_power=x_band,
+            y_band_power=y_band,
+            valid=True,
         )
-    per_update_ms = (time.perf_counter() - t0) / n * 1000
-    print(f"{per_update_ms:.3f} ms/update")
-    for k, v in feats.__dict__.items():
-        print(f"  {k}: {v:.4f}" if isinstance(v, float) else f"  {k}: {v}")

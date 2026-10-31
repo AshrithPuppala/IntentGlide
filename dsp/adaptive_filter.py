@@ -1,13 +1,27 @@
+"""
+Adaptive exponential smoother (Person 2).
 
-import math
-import time
-from typing import Optional
+    filtered = filtered + alpha * (input - filtered)
 
-from shared.contracts import InputSample, MotionFeatures, FilterOutput
+Key design choice: the filter works in the CUTOFF-FREQUENCY domain internally
+and converts to alpha with the real dt on every sample:
+
+    alpha = 2*pi*fc*dt / (1 + 2*pi*fc*dt)
+
+so "strong smoothing" means the same thing at 60 Hz, 120 Hz or 500 Hz input.
+The README alpha bounds (0.12 .. 0.85) and any ML-predicted alpha are defined
+at the nominal analysis rate (120 Hz) and are converted to cutoff bounds /
+targets once, so they too are rate-independent. The reported `alpha` is the
+value actually applied to this sample.
+
+Policy source (exposed as `last_source`):
+    "ml"                 valid alpha_ml supplied by Person 3's model
+    "heuristic"          no alpha_ml supplied; built-in rule used
+    "heuristic_fallback" alpha_ml supplied but NaN/inf; built-in rule used
+"""
 import sys
 from pathlib import Path
 
-# Add project root to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import math
@@ -15,6 +29,7 @@ import time
 from typing import Optional
 
 from shared.contracts import InputSample, MotionFeatures, FilterOutput
+
 _TWO_PI = 2.0 * math.pi
 
 
@@ -66,6 +81,7 @@ class AdaptiveFilter:
         self._y = 0.0
         self._fc: Optional[float] = None
         self._last_t: Optional[float] = None
+        self._last_source: Optional[str] = None
         self._last_out: Optional[FilterOutput] = None
 
     def update(
@@ -84,12 +100,18 @@ class AdaptiveFilter:
         # Reject bad samples: keep the last output rather than corrupting state.
         if not (math.isfinite(s.x) and math.isfinite(s.y) and math.isfinite(s.timestamp)):
             return self._last_out or FilterOutput(0.0, 0.0, None, "adaptive")
+
+        # Auto-reset if InputManager switches source (e.g. "mouse" <-> "synthetic")
+        if self._last_source is not None and s.source != self._last_source:
+            self.reset()
+
         if self._last_t is not None and s.timestamp <= self._last_t:
             return self._last_out
 
         first = self._last_t is None
         dt = self.nominal_dt if first else min(max(s.timestamp - self._last_t, 1e-3), 0.1)
         self._last_t = s.timestamp
+        self._last_source = s.source
 
         # 1. Target cutoff (Hz), from ML if usable, else from the heuristic.
         if alpha_ml is not None and math.isfinite(alpha_ml):
@@ -130,7 +152,7 @@ class AdaptiveFilter:
     def _heuristic_fc(self, feats: Optional[MotionFeatures]) -> float:
         lo, hi = self.fc_lo, self.heuristic_fc_max
         if feats is None or not feats.valid:
-            return math.sqrt(lo * hi)            # neutral during warm-up
+            return math.sqrt(lo * hi)             # neutral during warm-up
 
         # More oscillation -> lower cutoff (geometric interpolation: smoothing
         # strength is perceived/attenuated on a log-frequency scale).
@@ -146,15 +168,26 @@ class AdaptiveFilter:
 
 
 if __name__ == "__main__":
-    # Self-test (run from repo root):  python -m dsp.adaptive_filter
+    # Self-test with Person 1's SyntheticReach and Target
     from dsp.motion_analyzer import MotionAnalyzer
+    from input.synthetic_generator import SyntheticReach
+    from shared.contracts import Target
+
+    clock_t = [0.0]
+    target = Target(id="T1", center_x=500.0, center_y=300.0, width=40.0, height=40.0)
+    reach = SyntheticReach(
+        start=(100.0, 100.0), target=target, duration=1.5,
+        tremor_freq=8.0, tremor_amp=12.0, clock=lambda: clock_t[0]
+    )
 
     an, filt = MotionAnalyzer(), AdaptiveFilter()
     fs = 120.0
     for i in range(int(2.0 * fs)):
-        t = i / fs
-        s = InputSample(t, 300 + 100 * t + 15 * math.sin(2 * math.pi * 8 * t), 200, "synthetic")
+        clock_t[0] = i / fs
+        s = reach.get_sample()
+        lbl = reach.get_label()
         f = an.update(s)
         out = filt.update(s, f)
+
     print(f"osc={f.oscillation_score:.2f}  alpha={out.alpha:.3f}  source={filt.last_source}  "
-          f"{filt.last_processing_time_ms:.3f} ms")
+          f"state={lbl.true_state}  {filt.last_processing_time_ms:.3f} ms")
