@@ -1,33 +1,39 @@
-"""Deterministic mock objects for building modules independently."""
-from shared.contracts import FilterOutput, IntentDecision, InputSample, MotionFeatures
+import time
+from shared.contracts import (
+    InputSample, MotionFeatures, FilterOutput, Target, IntentDecision
+)
 
+# 100 fake mouse movements simulating ~120Hz polling
+MOCK_INPUT_SEQUENCE = [
+    InputSample(
+        timestamp=time.monotonic() + (i * 0.008), 
+        x=100.0 + (i * 2.0),
+        y=100.0 + (i * 2.0),
+        source="synthetic"
+    ) for i in range(100)
+]
 
-def sample_input_sequence(count: int = 20, start_time: float = 1.0):
-    return [
-        InputSample(
-            timestamp=start_time + i / 120.0,
-            x=100.0 + i * 1.5,
-            y=120.0 + i * 0.8,
-            source="synthetic",
-        )
-        for i in range(count)
-    ]
+MOCK_MOTION_FEATURES = MotionFeatures(
+    oscillation_score=0.8,
+    dominant_frequency=8.0,
+    periodicity_confidence=0.85,
+    directional_consistency=0.9,
+    velocity=250.0
+)
 
+MOCK_FILTER_OUTPUT = FilterOutput(
+    x=105.0,
+    y=105.0,
+    alpha=0.2,
+    mode="adaptive"
+)
 
-def sample_motion_features() -> MotionFeatures:
-    return MotionFeatures(0.65, 8.0, 0.82, 0.78, 180.0)
+MOCK_TARGET = Target(id="btn_1", center_x=500.0, center_y=500.0, width=50.0, height=50.0)
 
-
-def sample_filter_outputs() -> tuple[FilterOutput, FilterOutput]:
-    return (
-        FilterOutput(120.0, 132.0, mode="fixed"),
-        FilterOutput(123.0, 134.0, alpha=0.24, mode="adaptive"),
-    )
-
-
-def clear_target_decision() -> IntentDecision:
-    return IntentDecision("target_confident", "target-1", 0.91, 2.0, -1.0)
-
-
-def ambiguous_target_decision() -> IntentDecision:
-    return IntentDecision("target_ambiguous", None, 0.48, 0.0, 0.0)
+MOCK_INTENT_DECISION = IntentDecision(
+    state="target_confident",
+    target_id="btn_1",
+    confidence=0.9,
+    assist_dx=2.5,
+    assist_dy=2.5
+)
