@@ -14,6 +14,7 @@ from typing import Optional
 
 import pygame
 
+from sandbox.calculator import attach_calculator
 from sandbox.widgets import Widget, Window
 from visualization import theme
 from visualization.cursor_canvas import draw_polyline
@@ -22,7 +23,7 @@ from visualization.icons import draw_app_icon, draw_start_glyph
 WINDOW_SPECS = {
     "notepad": ("Notepad", 460, 320, ["Untitled - Notepad", "",
                                       "Try the X button or the taskbar", "with the tremor switched on."]),
-    "calculator": ("Calculator", 300, 380, ["Keypad arrives in the next build step."]),
+    "calculator": ("Calculator", 300, 380, []),
     "settings": ("Settings", 460, 320, ["Mode, tremor and assistance controls", "will live here."]),
 }
 ICON_ORDER = [("notepad", "Notepad"), ("calculator", "Calculator"), ("settings", "Settings")]
@@ -67,6 +68,8 @@ class Desktop:
         n = len(self.windows)
         win = Window(key, title, 160 + 34 * n, 40 + 34 * n, w, h,
                      on_close=lambda k=key: self.close_window(k), body_lines=lines)
+        if key == "calculator":
+            attach_calculator(win)               # keypad = 20 closely spaced targets
         self.windows.append(win)
         self._taskbar_order.append(key)
         self._layout_taskbar()

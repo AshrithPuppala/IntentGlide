@@ -1,0 +1,298 @@
+diff --git a/sandbox/calculator.py b/sandbox/calculator.py
+new file mode 100644
+index 0000000..2784520
+--- /dev/null
++++ b/sandbox/calculator.py
+@@ -0,0 +1,151 @@
++"""A small calculator: logic plus a dense 4x5 keypad window.
++
++The keypad is deliberately tight (20 keys, 6 px gaps). It is the best place to show
++confidence-gated assistance: many plausible neighbouring targets, so the controller
++should abstain unless one key is clearly the intended one.
++"""
++from __future__ import annotations
++
++from sandbox.widgets import Window
++from visualization import theme
++
++DIGITS = "0123456789"
++OPS = {"plus": "+", "minus": "-", "mul": "x", "div": "/"}
++LAYOUT = [
++    ["clear", "del", "pct", "div"],
++    ["7", "8", "9", "mul"],
++    ["4", "5", "6", "minus"],
++    ["1", "2", "3", "plus"],
++    ["neg", "0", "dot", "eq"],
++]
++LABELS = {"clear": "C", "del": "DEL", "pct": "%", "neg": "+/-", "dot": ".", "eq": "=", **OPS}
++
++KEY_W, KEY_H, GAP = 62, 46, 6
++
++
++def _fmt(value: float) -> str:
++    if value != value or value in (float("inf"), float("-inf")):
++        raise ArithmeticError
++    if value == int(value) and abs(value) < 1e12:
++        return str(int(value))
++    return f"{value:.10g}"
++
++
++class Calculator:
++    """Immediate-execution calculator (2 + 3 x 4 = 20, like a basic desk calculator)."""
++
++    MAX_DIGITS = 12
++
++    def __init__(self):
++        self.reset()
++
++    def reset(self):
++        self.entry = "0"
++        self.acc: float | None = None
++        self.op: str | None = None
++        self.fresh = True          # next digit starts a new number
++        self.error = False
++
++    @property
++    def display(self) -> str:
++        return "Error" if self.error else self.entry
++
++    def press(self, key: str):
++        if key == "clear":
++            self.reset()
++            return
++        if self.error:
++            return
++        if key in DIGITS:
++            if self.fresh:
++                self.entry, self.fresh = key, False
++            elif len(self.entry.replace("-", "").replace(".", "")) < self.MAX_DIGITS:
++                self.entry = key if self.entry == "0" else self.entry + key
++        elif key == "dot":
++            if self.fresh:
++                self.entry, self.fresh = "0.", False
++            elif "." not in self.entry:
++                self.entry += "."
++        elif key == "neg":
++            if self.entry != "0":
++                self.entry = self.entry[1:] if self.entry.startswith("-") else "-" + self.entry
++        elif key == "pct":
++            self._try(lambda: _fmt(float(self.entry) / 100.0))
++            self.fresh = True
++        elif key == "del":
++            if not self.fresh:
++                self.entry = self.entry[:-1]
++                if self.entry in ("", "-"):
++                    self.entry, self.fresh = "0", True
++        elif key in OPS:
++            if self.op is not None and not self.fresh:
++                self._compute()
++            elif self.op is None:
++                self.acc = float(self.entry)
++            self.op, self.fresh = key, True
++        elif key == "eq":
++            if self.op is not None:
++                self._compute()
++            self.acc, self.op, self.fresh = None, None, True
++
++    def _try(self, fn):
++        try:
++            self.entry = fn()
++        except (ArithmeticError, ValueError, OverflowError):
++            self.error = True
++
++    def _compute(self):
++        cur = float(self.entry)
++        acc = self.acc if self.acc is not None else cur
++
++        def calc():
++            if self.op == "plus":
++                result = acc + cur
++            elif self.op == "minus":
++                result = acc - cur
++            elif self.op == "mul":
++                result = acc * cur
++            else:
++                result = acc / cur
++            self.acc = result
++            return _fmt(result)
++
++        self._try(calc)
++
++
++def _key_style(name: str) -> dict:
++    if name == "eq":
++        return dict(fill=(36, 120, 90), hover_fill=(58, 168, 124), border=None)
++    if name in OPS:
++        return dict(fill=(50, 66, 136), hover_fill=(80, 104, 190), border=None)
++    if name in ("clear", "del"):
++        return dict(fill=(104, 50, 62), hover_fill=(160, 70, 84), border=None)
++    if name in ("pct", "neg"):
++        return dict(fill=(44, 50, 88), hover_fill=(66, 78, 142), border=None)
++    return dict(fill=(36, 42, 78), hover_fill=(66, 78, 142), border=None)
++
++
++def attach_calculator(win: Window) -> Calculator:
++    """Add the display and keypad to a calculator window. Returns the logic object."""
++    calc = Calculator()
++    win.calc = calc
++    left = (win.w - (4 * KEY_W + 3 * GAP)) / 2
++    top = 80
++    for r, row in enumerate(LAYOUT):
++        for c, name in enumerate(row):
++            win.add_button(f"key:{name}", LABELS.get(name, name),
++                           left + c * (KEY_W + GAP), top + r * (KEY_H + GAP), KEY_W, KEY_H,
++                           on_click=lambda n=name: calc.press(n)).style = {**_key_style(name), "size": 26}
++
++    def draw_display(surface, window):
++        import pygame
++        box = pygame.Rect(window.x + left, window.y + window.TITLE_H + 12, 4 * KEY_W + 3 * GAP, 56)
++        theme.rrect(surface, (12, 14, 30), box, 8, (60, 70, 130))
++        if calc.op is not None and not calc.error:
++            theme.text(surface, OPS[calc.op], (box.x + 12, box.y + 8), 22, theme.TEXT_DIM)
++        size = 40 if len(calc.display) <= 9 else 30
++        theme.text(surface, calc.display, (box.right - 12, box.centery + 4), size,
++                   theme.RED if calc.error else theme.TEXT, anchor="midright")
++
++    win.on_draw = draw_display
++    return calc
+diff --git a/sandbox/desktop.py b/sandbox/desktop.py
+index dced38e..e0db038 100644
+--- a/sandbox/desktop.py
++++ b/sandbox/desktop.py
+@@ -14,6 +14,7 @@ from typing import Optional
+ 
+ import pygame
+ 
++from sandbox.calculator import attach_calculator
+ from sandbox.widgets import Widget, Window
+ from visualization import theme
+ from visualization.cursor_canvas import draw_polyline
+@@ -22,7 +23,7 @@ from visualization.icons import draw_app_icon, draw_start_glyph
+ WINDOW_SPECS = {
+     "notepad": ("Notepad", 460, 320, ["Untitled - Notepad", "",
+                                       "Try the X button or the taskbar", "with the tremor switched on."]),
+-    "calculator": ("Calculator", 300, 380, ["Keypad arrives in the next build step."]),
++    "calculator": ("Calculator", 300, 380, []),
+     "settings": ("Settings", 460, 320, ["Mode, tremor and assistance controls", "will live here."]),
+ }
+ ICON_ORDER = [("notepad", "Notepad"), ("calculator", "Calculator"), ("settings", "Settings")]
+@@ -67,6 +68,8 @@ class Desktop:
+         n = len(self.windows)
+         win = Window(key, title, 160 + 34 * n, 40 + 34 * n, w, h,
+                      on_close=lambda k=key: self.close_window(k), body_lines=lines)
++        if key == "calculator":
++            attach_calculator(win)               # keypad = 20 closely spaced targets
+         self.windows.append(win)
+         self._taskbar_order.append(key)
+         self._layout_taskbar()
+diff --git a/sandbox/widgets.py b/sandbox/widgets.py
+index 42ffc17..abb8ec1 100644
+--- a/sandbox/widgets.py
++++ b/sandbox/widgets.py
+@@ -10,6 +10,10 @@ from shared.contracts import Target
+ from visualization import theme
+ 
+ 
++_DEFAULT_STYLE = dict(fill=theme.SURFACE_2, hover_fill=(60, 70, 128), border=theme.BORDER,
++                      text_color=theme.TEXT, size=20, radius=7)
++
++
+ @dataclass
+ class Widget:
+     id: str
+@@ -20,6 +24,7 @@ class Widget:
+     label: str = ""
+     on_click: Optional[Callable[[], None]] = None
+     hovered: bool = False
++    style: Optional[dict] = None          # per-widget colours/size overrides for draw()
+ 
+     def contains(self, px: float, py: float) -> bool:
+         return self.x <= px <= self.x + self.w and self.y <= py <= self.y + self.h
+@@ -36,11 +41,11 @@ class Widget:
+         cx, cy = self.center
+         return Target(self.id, cx, cy, self.w, self.h)
+ 
+-    def draw(self, surface, fill=theme.SURFACE_2, hover_fill=(60, 70, 128), border=theme.BORDER,
+-             text_color=theme.TEXT, size: int = 20, radius: int = 7):
+-        theme.rrect(surface, hover_fill if self.hovered else fill, self.rect, radius, border)
++    def draw(self, surface, **overrides):
++        o = {**_DEFAULT_STYLE, **(self.style or {}), **overrides}
++        theme.rrect(surface, o["hover_fill"] if self.hovered else o["fill"], self.rect, o["radius"], o["border"])
+         if self.label:
+-            theme.text(surface, self.label, self.rect.center, size, text_color, anchor="center")
++            theme.text(surface, self.label, self.rect.center, o["size"], o["text_color"], anchor="center")
+ 
+ 
+ class Window:
+@@ -53,6 +58,7 @@ class Window:
+         self.body_lines = body_lines or []
+         self.close_btn = Widget(f"{id}:close", x + w - 38, y + 4, 32, 24, "x", on_close)
+         self.widgets: list[Widget] = []   # content widgets (calculator keys, toggles...)
++        self.on_draw: Optional[Callable] = None   # extra content drawn under the widgets: fn(surface, window)
+ 
+     @property
+     def rect(self) -> pygame.Rect:
+@@ -80,6 +86,8 @@ class Window:
+         theme.text(surface, self.title, (self.x + 14, self.y + 9), 22, theme.TEXT)
+         for i, line in enumerate(self.body_lines):
+             theme.text(surface, line, (self.x + 18, self.y + self.TITLE_H + 18 + i * 24), 20, theme.TEXT_DIM)
++        if self.on_draw:
++            self.on_draw(surface, self)
+         for widget in self.widgets:
+             widget.draw(surface)
+         self.close_btn.draw(surface, fill=bar_color, hover_fill=(200, 70, 84), border=None,
+diff --git a/tests/test_calculator.py b/tests/test_calculator.py
+new file mode 100644
+index 0000000..7138f0e
+--- /dev/null
++++ b/tests/test_calculator.py
+@@ -0,0 +1,49 @@
++from sandbox.calculator import Calculator
++from sandbox.desktop import Desktop
++
++
++def run(*keys):
++    calc = Calculator()
++    for key in keys:
++        calc.press(key)
++    return calc
++
++
++def test_basic_arithmetic_and_chaining():
++    assert run("2", "plus", "3", "eq").display == "5"
++    assert run("2", "plus", "3", "mul", "4", "eq").display == "20"      # immediate execution
++    assert run("9", "minus", "4", "eq").display == "5"
++    assert run("8", "div", "4", "eq").display == "2"
++
++
++def test_decimals_sign_percent_delete_clear():
++    assert run("1", "dot", "5", "plus", "1", "dot", "5", "eq").display == "3"
++    assert run("5", "neg").display == "-5"
++    assert run("5", "0", "pct").display == "0.5"
++    assert run("1", "2", "3", "del").display == "12"
++    assert run("1", "2", "clear").display == "0"
++
++
++def test_divide_by_zero_is_an_error_until_cleared():
++    calc = run("5", "div", "0", "eq")
++    assert calc.display == "Error"
++    calc.press("7")
++    assert calc.display == "Error"
++    calc.press("clear")
++    assert calc.display == "0"
++
++
++def test_changing_operator_does_not_apply_twice():
++    assert run("5", "plus", "minus", "2", "eq").display == "3"
++
++
++def test_calculator_window_keypad_is_clickable_and_targetable():
++    d = Desktop()
++    d.click(*d.icons[1].center)                       # open Calculator via its icon
++    win = d.windows[-1]
++    keys = {w.id: w for w in win.widgets}
++    assert len(keys) == 20
++    for name in ("7", "mul", "6", "eq"):
++        assert d.click(*keys[f"calculator:key:{name}"].center) == f"calculator:key:{name}"
++    assert win.calc.display == "42"
++    assert len([t for t in d.targets if t.id.startswith("calculator:key:")]) == 20

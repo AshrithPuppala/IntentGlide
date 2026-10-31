@@ -10,6 +10,10 @@ from shared.contracts import Target
 from visualization import theme
 
 
+_DEFAULT_STYLE = dict(fill=theme.SURFACE_2, hover_fill=(60, 70, 128), border=theme.BORDER,
+                      text_color=theme.TEXT, size=20, radius=7)
+
+
 @dataclass
 class Widget:
     id: str
@@ -20,6 +24,7 @@ class Widget:
     label: str = ""
     on_click: Optional[Callable[[], None]] = None
     hovered: bool = False
+    style: Optional[dict] = None          # per-widget colours/size overrides for draw()
 
     def contains(self, px: float, py: float) -> bool:
         return self.x <= px <= self.x + self.w and self.y <= py <= self.y + self.h
@@ -36,11 +41,11 @@ class Widget:
         cx, cy = self.center
         return Target(self.id, cx, cy, self.w, self.h)
 
-    def draw(self, surface, fill=theme.SURFACE_2, hover_fill=(60, 70, 128), border=theme.BORDER,
-             text_color=theme.TEXT, size: int = 20, radius: int = 7):
-        theme.rrect(surface, hover_fill if self.hovered else fill, self.rect, radius, border)
+    def draw(self, surface, **overrides):
+        o = {**_DEFAULT_STYLE, **(self.style or {}), **overrides}
+        theme.rrect(surface, o["hover_fill"] if self.hovered else o["fill"], self.rect, o["radius"], o["border"])
         if self.label:
-            theme.text(surface, self.label, self.rect.center, size, text_color, anchor="center")
+            theme.text(surface, self.label, self.rect.center, o["size"], o["text_color"], anchor="center")
 
 
 class Window:
@@ -53,6 +58,7 @@ class Window:
         self.body_lines = body_lines or []
         self.close_btn = Widget(f"{id}:close", x + w - 38, y + 4, 32, 24, "x", on_close)
         self.widgets: list[Widget] = []   # content widgets (calculator keys, toggles...)
+        self.on_draw: Optional[Callable] = None   # extra content drawn under the widgets: fn(surface, window)
 
     @property
     def rect(self) -> pygame.Rect:
@@ -80,6 +86,8 @@ class Window:
         theme.text(surface, self.title, (self.x + 14, self.y + 9), 22, theme.TEXT)
         for i, line in enumerate(self.body_lines):
             theme.text(surface, line, (self.x + 18, self.y + self.TITLE_H + 18 + i * 24), 20, theme.TEXT_DIM)
+        if self.on_draw:
+            self.on_draw(surface, self)
         for widget in self.widgets:
             widget.draw(surface)
         self.close_btn.draw(surface, fill=bar_color, hover_fill=(200, 70, 84), border=None,
