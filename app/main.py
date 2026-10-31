@@ -8,7 +8,7 @@ Controls:
 import pygame
 
 from app.orchestrator import IntentGlideOrchestrator
-from input.synthetic_generator import SyntheticInputGenerator
+from input.synthetic_generator import SyntheticInput
 from sandbox.scene import SandboxScene
 from visualization.dashboard import draw_dashboard
 from visualization.diagnostics import format_diagnostics
@@ -22,13 +22,18 @@ def main():
     clock = pygame.time.Clock()
 
     scene = SandboxScene(width=width, height=600)
-    generator = SyntheticInputGenerator(
-        sample_rate=120, disturbance_frequency=8, amplitude=7
+    generator = SyntheticInput(
+    start_x=100,
+    start_y=180,
+    speed=120,
+    tremor_freq=8,
+    tremor_amp=7,
+    bounds=(0, 0, width, 600),
     )
     pipeline = IntentGlideOrchestrator(analysis_rate=120)
-    sample_index = 0
     running = True
-
+    debug_counter = 0
+    safety_override = False
     while running:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -44,14 +49,35 @@ def main():
                         pygame.K_4: "full",
                     }[event.key]
                 elif event.key == pygame.K_a:
-                    scene.set_layout("standard")
+                    mods = pygame.key.get_mods()
+
+                    if (mods & pygame.KMOD_CTRL) and (mods & pygame.KMOD_SHIFT):
+                        safety_override = not safety_override
+                    else:
+                        scene.set_layout("standard")
                 elif event.key == pygame.K_m:
                     scene.set_layout("ambiguous")
-
-        # Synthetic input is the hardware-independent demonstration fallback.
-        sample = generator.sample(sample_index)
-        sample_index += 1
-        result = pipeline.process(sample, targets=scene.targets)
+                elif event.key == pygame.K_b:
+                    scene.set_layout("small")
+                elif event.key == pygame.K_l:
+                    scene.set_layout("large") # Synthetic input is the hardware-independent demonstration fallback.
+        sample = generator.get_sample()
+        result = pipeline.process(
+            sample,
+            targets=scene.targets,
+            override=safety_override
+        )
+        if debug_counter % 120 == 0:
+            print(
+                f"Oscillation: {result['features'].oscillation_score:.3f} | "
+                f"Frequency: {result['features'].dominant_frequency} | "
+                f"Periodicity: {result['features'].periodicity_confidence:.3f} | "
+                f"Alpha: {result['adaptive'].alpha:.3f} | "
+                f"Fixed: ({result['fixed'].x:.1f}, {result['fixed'].y:.1f}) | "
+                f"Adaptive: ({result['adaptive'].x:.1f}, {result['adaptive'].y:.1f})"
+                f"Safety Override: {'ON' if safety_override else 'OFF'}",
+            )
+        debug_counter += 1
         raw, output = result["raw"], result["output"]
         scene.add_positions((raw.x, raw.y), (output.x, output.y))
         scene.draw(screen, (output.x, output.y))
