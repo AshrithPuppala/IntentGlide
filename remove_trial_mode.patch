@@ -1,0 +1,585 @@
+diff --git a/app/main.py b/app/main.py
+index cf92cf8..a7c7fbb 100644
+--- a/app/main.py
++++ b/app/main.py
+@@ -7,22 +7,18 @@ Controls:
+   D = desktop scene, T = test-target scene
+   S = switch input: synthetic <-> real mouse, V = tremor on/off (mouse input)
+   Ctrl+Shift+A = manual override
+-  SPACE = start a trial (reach for the highlighted calculator key and click it)
+-  R = auto-reach trials (SyntheticReach drives the cursor, trials chain), BACKSPACE = clear trial stats
+   ESC / window close = quit
+ """
+ import pygame
+ 
+ from app.orchestrator import IntentGlideOrchestrator
+ from app.disturbed_mouse import DisturbedMouse
+-from app.trial_session import TrialSession
+ from input.input_provider import InputManager, MouseProvider
+ from input.synthetic_generator import SyntheticInput
+ from sandbox.desktop import Desktop
+ from sandbox.scene import SandboxScene
+ from visualization.cursor_canvas import draw_cursor
+ from visualization.panel import PANEL_W, draw_side_panel
+-from visualization.trial_hud import draw_trial_hud, hud_rect
+ 
+ 
+ def main():
+@@ -47,7 +43,6 @@ def main():
+     cursor_xy = (0.0, 0.0)
+     running = True
+     safety_override = False
+-    trials = TrialSession(desktop, inputs, on_reset=pipeline.reset)
+ 
+     while running:
+         for event in pygame.event.get():
+@@ -57,7 +52,6 @@ def main():
+                 if event.key == pygame.K_ESCAPE:
+                     running = False
+                 elif event.key in (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5):
+-                    trials.cancel()                  # a trial belongs to one mode; start a new one
+                     pipeline.set_mode({
+                         pygame.K_1: "raw",
+                         pygame.K_2: "fixed",
+@@ -74,28 +68,10 @@ def main():
+                 elif event.key == pygame.K_d:
+                     scene = desktop
+                 elif event.key == pygame.K_t:
+-                    trials.stop_auto()               # trials need the desktop's calculator
+                     scene = test_scene
+                 elif event.key == pygame.K_s:
+-                    trials.stop_auto()
+                     inputs.set_source("mouse" if inputs.active == "synthetic" else "synthetic")
+                     pipeline.reset()
+-                elif event.key == pygame.K_SPACE:
+-                    scene = desktop
+-                    trials.auto = False
+-                    if inputs.active != "mouse":
+-                        inputs.set_source("mouse")   # a manual trial is driven by the (disturbed) mouse
+-                        pipeline.reset()
+-                    trials.start(pipeline.mode, cursor_xy)
+-                elif event.key == pygame.K_r:
+-                    scene = desktop
+-                    if trials.auto:
+-                        trials.stop_auto()
+-                    else:
+-                        trials.auto = True
+-                        trials.start(pipeline.mode, cursor_xy)
+-                elif event.key == pygame.K_BACKSPACE:
+-                    trials.clear()
+                 elif event.key == pygame.K_v:
+                     disturbed_mouse.enabled = not disturbed_mouse.enabled
+                 elif event.key == pygame.K_m:
+@@ -107,7 +83,6 @@ def main():
+             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                 if hasattr(scene, "click"):
+                     scene.click(*cursor_xy)
+-                trials.click(cursor_xy)              # scored on the processed cursor, like the click itself
+ 
+         sample = inputs.get_sample()
+         result = pipeline.process(sample, targets=scene.targets, override=safety_override)
+@@ -116,10 +91,7 @@ def main():
+         scene.add_positions((raw.x, raw.y), cursor_xy)
+         if hasattr(scene, "hover"):
+             scene.hover(*cursor_xy)
+-        trials.update(cursor_xy, pipeline.mode)      # auto click, timeout, chaining the next trial
+         scene.draw(screen, None)
+-        if scene is desktop:
+-            draw_trial_hud(screen, hud_rect(area_w), trials.view(pipeline.mode))
+         draw_side_panel(screen, pygame.Rect(area_w, 0, PANEL_W, height), {
+             "mode": pipeline.mode,
+             "features": result["features"],
+diff --git a/app/trial_session.py b/app/trial_session.py
+deleted file mode 100644
+index f88ba7d..0000000
+--- a/app/trial_session.py
++++ /dev/null
+@@ -1,187 +0,0 @@
+-"""Trial mode (step 13): reach for a highlighted calculator key and click it.
+-
+-Glue between four existing pieces, adding no new task logic of its own:
+-  sandbox.tasks.TrialManager     decides the goal and scores the click (success / wrong / miss / timeout)
+-  input.synthetic_generator      SyntheticReach drives the cursor toward the goal in auto mode
+-  sandbox.desktop.Desktop        draws the goal highlight and exposes the keypad as targets
+-  app.orchestrator               filters the input; the click lands on the PROCESSED cursor
+-
+-Two ways to run a trial:
+-  manual  the user reaches with the (tremor-disturbed) mouse and clicks.
+-  auto    SyntheticReach reaches for the key and the session clicks after a short dwell.
+-          Auto trials chain until stopped. This is the mode the benchmark (step 14) will reuse.
+-
+-One click ends a trial: hitting the goal is a success, hitting another key is a wrong target,
+-hitting nothing is a miss, and running out of time is a timeout.
+-"""
+-from __future__ import annotations
+-
+-import random
+-import statistics
+-import time
+-from typing import Callable, Optional
+-
+-from input.synthetic_generator import SyntheticReach
+-from sandbox.calculator import LABELS
+-from sandbox.tasks import TrialManager
+-from shared.contracts import TrialResult
+-
+-KEY_PREFIX = "calculator:key:"
+-
+-
+-def key_label(target_id: Optional[str]) -> str:
+-    """'calculator:key:plus' -> '+'"""
+-    if not target_id:
+-        return "-"
+-    name = target_id.removeprefix(KEY_PREFIX)
+-    return LABELS.get(name, name)
+-
+-
+-class TrialSession:
+-    def __init__(self, desktop, inputs, on_reset: Callable[[], None], *,
+-                 clock: Callable[[], float] = time.monotonic, timeout: float = 8.0,
+-                 seed: Optional[int] = None, tremor_freq: float = 8.0, tremor_amp: float = 12.0,
+-                 dwell: float = 0.25, pause: float = 0.8):
+-        self.desktop = desktop
+-        self.inputs = inputs
+-        self.on_reset = on_reset          # called when the input source changes (clears filter state)
+-        self.clock = clock
+-        self.timeout = timeout
+-        self.rng = random.Random(seed)
+-        self.tremor_freq, self.tremor_amp = tremor_freq, tremor_amp
+-        self.dwell, self.pause = dwell, pause
+-
+-        self.auto = False
+-        self.records: list[tuple[str, TrialResult]] = []     # (mode, result)
+-        self.last: Optional[tuple[str, TrialResult]] = None
+-        self.manager: Optional[TrialManager] = None
+-        self.reach: Optional[SyntheticReach] = None
+-        self.mode = ""
+-        self._prev_source: Optional[str] = None
+-        self._arrived_at: Optional[float] = None
+-        self._next_at: Optional[float] = None
+-        self._last_goal: Optional[str] = None
+-
+-    # ---- state ---------------------------------------------------------
+-    @property
+-    def active(self) -> bool:
+-        return self.manager is not None and not self.manager.is_complete
+-
+-    @property
+-    def goal_id(self) -> Optional[str]:
+-        return self.manager.intended_target_id if self.active else None
+-
+-    @property
+-    def elapsed(self) -> float:
+-        return self.manager.elapsed if self.manager else 0.0
+-
+-    # ---- starting / stopping ------------------------------------------
+-    def start(self, mode: str, cursor_xy) -> bool:
+-        """Begin a trial in ``mode``. Returns False if the keypad is not available."""
+-        self.cancel()
+-        self.desktop.open_window("calculator")               # opens or raises it; closes any menu
+-        targets = self.desktop.keypad_targets()
+-        if not targets:
+-            return False
+-        ids = [t.id for t in targets if t.id != self._last_goal] or [t.id for t in targets]
+-        goal = self.rng.choice(ids)
+-        self.manager = TrialManager(targets, timeout=self.timeout, end_on_miss=True, clock=self.clock)
+-        trial = self.manager.start_trial(goal)
+-        self.mode, self._last_goal = mode, goal
+-        self._arrived_at = self._next_at = None
+-        self.desktop.goal_id = goal
+-        if self.auto:
+-            sx, sy = self._clamp(cursor_xy)
+-            self.reach = SyntheticReach(
+-                (sx, sy), self.manager.intended_target, tremor_freq=self.tremor_freq,
+-                tremor_amp=self.tremor_amp, trial_id=trial.trial_id, candidates=targets, clock=self.clock)
+-            self.inputs.sources["reach"] = self.reach
+-            self._prev_source = self.inputs.active
+-            self.inputs.set_source("reach")
+-            self.on_reset()
+-        return True
+-
+-    def cancel(self):
+-        """Abandon the current trial without recording it (mode change, source change, quit)."""
+-        self.manager = None
+-        self._release_reach()
+-        self.desktop.goal_id = None
+-        self._next_at = None
+-
+-    def stop_auto(self):
+-        self.auto = False
+-        self.cancel()
+-
+-    def clear(self):
+-        self.cancel()
+-        self.records.clear()
+-        self.last = None
+-
+-    def _clamp(self, xy):
+-        x = min(max(xy[0], 20.0), self.desktop.width - 20.0)
+-        y = min(max(xy[1], 20.0), self.desktop.height - self.desktop.TASKBAR_H - 20.0)
+-        return x, y
+-
+-    def _release_reach(self):
+-        if self.reach is None:
+-            return
+-        self.reach = None
+-        if self._prev_source is not None and self.inputs.active == "reach":
+-            self.inputs.set_source(self._prev_source)
+-            self.on_reset()
+-        self._prev_source = None
+-
+-    # ---- events ---------------------------------------------------------
+-    def click(self, cursor_xy) -> Optional[TrialResult]:
+-        """Report a click at the DISPLAYED (processed) cursor position."""
+-        if not self.active:
+-            return None
+-        result = self.manager.report_click(*cursor_xy)
+-        return self._finish(result) if result else None
+-
+-    def update(self, cursor_xy, mode: str) -> Optional[TrialResult]:
+-        """Call once per frame. Handles the auto click, the timeout and chaining the next trial."""
+-        now = self.clock()
+-        if self.active:
+-            if self.reach is not None and self.reach.arrived:
+-                if self._arrived_at is None:
+-                    self._arrived_at = now
+-                elif now - self._arrived_at >= self.dwell:
+-                    self.desktop.click(*cursor_xy)          # press whatever is under the FILTERED cursor
+-                    return self.click(cursor_xy)            # ...then score that same click
+-            timed_out = self.manager.update()
+-            return self._finish(timed_out) if timed_out else None
+-        if self.auto and self._next_at is not None and now >= self._next_at:
+-            self.start(mode, cursor_xy)
+-        return None
+-
+-    def _finish(self, result: TrialResult) -> TrialResult:
+-        self.records.append((self.mode, result))
+-        self.last = (self.mode, result)
+-        self.desktop.goal_id = None
+-        self._release_reach()
+-        self._next_at = self.clock() + self.pause if self.auto else None
+-        return result
+-
+-    # ---- statistics -----------------------------------------------------
+-    def stats(self, mode: Optional[str] = None) -> dict:
+-        rows = [r for m, r in self.records if mode is None or m == mode]
+-        count = lambda o: sum(1 for r in rows if r.outcome == o)
+-        times = [r.elapsed for r in rows if r.success]
+-        n = len(rows)
+-        return {
+-            "n": n, "success": count("success"), "wrong_target": count("wrong_target"),
+-            "miss": count("miss"), "timeout": count("timeout"),
+-            "success_rate": (count("success") / n) if n else None,
+-            "median_time": statistics.median(times) if times else None,
+-        }
+-
+-    def view(self, mode: str) -> dict:
+-        """Everything the HUD needs, as plain data."""
+-        return {
+-            "active": self.active, "auto": self.auto, "mode": mode,
+-            "goal": key_label(self.goal_id), "elapsed": self.elapsed, "timeout": self.timeout,
+-            "last": self.last, "last_label": (key_label(self.last[1].clicked_target_id)
+-                                              if self.last and self.last[1].clicked_target_id else None),
+-            "stats": self.stats(mode), "total": self.stats(),
+-        }
+diff --git a/sandbox/desktop.py b/sandbox/desktop.py
+index a4753f8..e496d06 100644
+--- a/sandbox/desktop.py
++++ b/sandbox/desktop.py
+@@ -9,7 +9,6 @@ The simulated cursor is drawn by the caller (so the side panel can sit under it)
+ """
+ from __future__ import annotations
+ 
+-import math
+ import time
+ from typing import Optional
+ 
+@@ -21,11 +20,9 @@ from sandbox.models import BenchmarkModel, SettingsModel
+ from sandbox.scatter import scatter_icon_positions
+ from sandbox.settings_window import attach_settings
+ from sandbox.widgets import Widget, Window
+-from shared.contracts import Target
+ from visualization import theme
+ from visualization.cursor_canvas import draw_polyline
+ from visualization.icons import draw_app_icon, draw_start_glyph
+-from visualization.trial_hud import hud_rect
+ 
+ WINDOW_SPECS = {
+     "notepad": ("Notepad", 460, 320, ["Untitled - Notepad", "",
+@@ -57,7 +54,6 @@ class Desktop:
+         self.raw_trail: list[tuple[float, float]] = []
+         self.output_trail: list[tuple[float, float]] = []
+         self.last_clicked: Optional[str] = None
+-        self.goal_id: Optional[str] = None        # widget id highlighted as the current trial goal
+         self._wallpaper: Optional[pygame.Surface] = None
+ 
+         # Icon widgets include the caption, like a real desktop icon.
+@@ -82,7 +78,6 @@ class Desktop:
+         avoid = [
+             (0, 0, 120, self.height),                              # the original icon column
+             (0, self.height - self.TASKBAR_H - 8, self.width, self.TASKBAR_H + 8),   # taskbar
+-            tuple(hud_rect(self.width)),                           # trial HUD, top right
+             (160, 40, cw, ch),                                     # where the calculator opens
+         ]
+         area = (124, 16, self.width - 124 - 12, self.height - self.TASKBAR_H - 16 - 12)
+@@ -175,11 +170,6 @@ class Desktop:
+         items += [self.start_btn, self.show_desktop_btn]
+         return items
+ 
+-    def keypad_targets(self) -> list[Target]:
+-        """The calculator keys as Targets (empty if the calculator is closed)."""
+-        win = next((w for w in self.windows if w.id == "calculator"), None)
+-        return [w.to_target() for w in win.widgets] if win else []
+-
+     @property
+     def targets(self):
+         return [w.to_target() for w in self._reachable()]
+@@ -273,7 +263,6 @@ class Desktop:
+         for win in self.windows:
+             win.draw(surface, active=win is top)
+ 
+-        self._draw_goal(surface)
+         if self.menu_open:
+             self._draw_menu(surface)
+         self._draw_taskbar(surface)
+@@ -281,17 +270,6 @@ class Desktop:
+         draw_polyline(surface, self.raw_trail, (170, 120, 210), 1)
+         draw_polyline(surface, self.output_trail, (80, 225, 190), 2)
+ 
+-    def _draw_goal(self, surface):
+-        """Pulsing amber ring around the key the current trial asks the user to reach."""
+-        if not self.goal_id:
+-            return
+-        widget = next((w for w in self._reachable() if w.id == self.goal_id), None)
+-        if widget is None:
+-            return
+-        pulse = 0.5 + 0.5 * math.sin(time.monotonic() * 6.0)
+-        ring = widget.rect.inflate(8 + int(4 * pulse), 8 + int(4 * pulse))
+-        pygame.draw.rect(surface, theme.AMBER, ring, width=3 + int(pulse * 1.5), border_radius=10)
+-
+     def _draw_menu(self, surface):
+         theme.drop_shadow(surface, self.menu_rect, radius=12, spread=14, strength=12)
+         theme.rrect(surface, (26, 30, 58), self.menu_rect, 12, theme.BORDER, 2)
+diff --git a/tests/test_trial_session.py b/tests/test_trial_session.py
+deleted file mode 100644
+index 5a63dda..0000000
+--- a/tests/test_trial_session.py
++++ /dev/null
+@@ -1,149 +0,0 @@
+-import os
+-
+-os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+-
+-from app.trial_session import KEY_PREFIX, TrialSession, key_label
+-from input.input_provider import InputManager
+-from sandbox.desktop import Desktop
+-from shared.contracts import InputSample
+-
+-
+-class FakeClock:
+-    def __init__(self):
+-        self.t = 100.0
+-
+-    def __call__(self):
+-        return self.t
+-
+-    def advance(self, dt):
+-        self.t += dt
+-
+-
+-class StaticSource:
+-    def get_sample(self):
+-        return InputSample(timestamp=0.0, x=0.0, y=0.0, source="mouse")
+-
+-
+-def make(auto=False, seed=1, **kw):
+-    clock = FakeClock()
+-    desktop = Desktop()
+-    inputs = InputManager(mouse=StaticSource())
+-    resets = []
+-    session = TrialSession(desktop, inputs, on_reset=lambda: resets.append(1), clock=clock, seed=seed, **kw)
+-    session.auto = auto
+-    return session, desktop, inputs, clock, resets
+-
+-
+-def goal_center(desktop, session):
+-    return next(t for t in desktop.keypad_targets() if t.id == session.goal_id)
+-
+-
+-def test_start_opens_calculator_and_highlights_a_key():
+-    s, d, *_ = make()
+-    assert s.start("full", (50, 50))
+-    assert [w.id for w in d.windows] == ["calculator"]
+-    assert s.active and s.goal_id == d.goal_id
+-    assert s.goal_id in {t.id for t in d.keypad_targets()}
+-    assert s.goal_id.startswith(KEY_PREFIX)
+-
+-
+-def test_clicking_the_goal_is_a_success_and_clears_the_highlight():
+-    s, d, _i, clock, _r = make()
+-    s.start("full", (50, 50))
+-    t = goal_center(d, s)
+-    clock.advance(1.5)
+-    r = s.click((t.center_x, t.center_y))
+-    assert r.outcome == "success" and abs(r.elapsed - 1.5) < 1e-9
+-    assert not s.active and d.goal_id is None
+-    assert s.stats("full")["success_rate"] == 1.0 and s.stats("full")["median_time"] == 1.5
+-
+-
+-def test_wrong_key_miss_and_timeout_are_distinguished():
+-    s, d, _i, clock, _r = make()
+-    s.start("raw", (50, 50))
+-    other = next(t for t in d.keypad_targets() if t.id != s.goal_id)
+-    assert s.click((other.center_x, other.center_y)).outcome == "wrong_target"
+-    s.start("raw", (50, 50))
+-    assert s.click((5, 5)).outcome == "miss"            # empty space: one click ends the trial
+-    s.start("raw", (50, 50))
+-    clock.advance(s.timeout + 0.1)
+-    assert s.update((5, 5), "raw").outcome == "timeout"
+-    st = s.stats("raw")
+-    assert (st["wrong_target"], st["miss"], st["timeout"], st["success"]) == (1, 1, 1, 0)
+-    assert st["median_time"] is None
+-
+-
+-def test_stats_are_kept_per_mode():
+-    s, d, _i, clock, _r = make()
+-    for mode, dt in (("raw", 1.0), ("raw", 3.0), ("full", 2.0)):
+-        s.start(mode, (50, 50))
+-        t = goal_center(d, s)
+-        clock.advance(dt)
+-        s.click((t.center_x, t.center_y))
+-    assert s.stats("raw")["n"] == 2 and s.stats("raw")["median_time"] == 2.0
+-    assert s.stats("full")["n"] == 1 and s.stats()["n"] == 3
+-
+-
+-def test_cancel_discards_the_trial():
+-    s, d, *_ = make()
+-    s.start("full", (50, 50))
+-    s.cancel()
+-    assert not s.active and d.goal_id is None and s.stats()["n"] == 0
+-
+-
+-def test_goal_never_repeats_back_to_back():
+-    s, *_ = make(seed=7)
+-    goals = []
+-    for _ in range(40):
+-        s.start("full", (50, 50))
+-        goals.append(s.goal_id)
+-    assert all(a != b for a, b in zip(goals, goals[1:]))
+-
+-
+-def test_auto_reach_drives_the_cursor_clicks_and_chains():
+-    s, d, inputs, clock, resets = make(auto=True, tremor_amp=0.0)
+-    s.start("full", (60, 300))
+-    assert inputs.active == "reach" and resets
+-    cursor, results = (60, 300), []
+-    for _ in range(400):                                 # 3.2 s at 125 Hz
+-        clock.advance(0.008)
+-        sample = inputs.get_sample() if inputs.active == "reach" else None
+-        if sample is not None:
+-            cursor = (sample.x, sample.y)                # no filtering in this test
+-        r = s.update(cursor, "full")
+-        if r:
+-            results.append(r)
+-    assert results and results[0].outcome == "success"
+-    assert len(results) >= 2                             # trials chained after the pause
+-    assert inputs.active in ("mouse", "reach")
+-
+-
+-def test_auto_click_presses_the_calculator_key():
+-    s, d, inputs, clock, _r = make(auto=True, tremor_amp=0.0)
+-    s.start("full", (60, 300))
+-    pressed = []
+-    d.windows[-1].calc.press = pressed.append             # record what the click actually pressed
+-    cursor = (60, 300)
+-    goal = s.goal_id
+-    for _ in range(300):
+-        clock.advance(0.008)
+-        if inputs.active == "reach":
+-            sample = inputs.get_sample()
+-            cursor = (sample.x, sample.y)
+-        if s.update(cursor, "full"):
+-            break
+-    assert pressed == [goal.removeprefix(KEY_PREFIX)]
+-
+-
+-def test_source_is_restored_when_a_reach_trial_ends_or_is_cancelled():
+-    s, d, inputs, clock, _r = make(auto=True)
+-    s.start("full", (60, 300))
+-    assert inputs.active == "reach"
+-    s.stop_auto()
+-    assert inputs.active == "mouse" and not s.auto
+-
+-
+-def test_key_labels_are_readable():
+-    assert key_label("calculator:key:plus") == "+"
+-    assert key_label("calculator:key:7") == "7"
+-    assert key_label(None) == "-"
+diff --git a/visualization/trial_hud.py b/visualization/trial_hud.py
+deleted file mode 100644
+index 4c69b4f..0000000
+--- a/visualization/trial_hud.py
++++ /dev/null
+@@ -1,62 +0,0 @@
+-"""Trial HUD: a small card in the desktop area showing the goal, timer, last result and running stats."""
+-from __future__ import annotations
+-
+-import pygame
+-
+-from visualization import theme
+-
+-HUD_W, HUD_H = 330, 132
+-OUTCOME_STYLE = {
+-    "success": ("SUCCESS", theme.GREEN),
+-    "wrong_target": ("WRONG TARGET", theme.RED),
+-    "miss": ("MISSED", theme.AMBER),
+-    "timeout": ("TIMEOUT", theme.AMBER),
+-}
+-
+-
+-def hud_rect(area_w: int) -> pygame.Rect:
+-    return pygame.Rect(area_w - HUD_W - 14, 12, HUD_W, HUD_H)
+-
+-
+-def draw_trial_hud(surface, rect, v: dict):
+-    rect = pygame.Rect(rect)
+-    theme.drop_shadow(surface, rect, radius=12, spread=12, strength=10)
+-    theme.rrect(surface, (22, 26, 52), rect, 12, theme.BORDER, 2)
+-    x, y = rect.x + 14, rect.y + 10
+-    theme.text(surface, "TRIAL MODE", (x, y), 18, theme.TEXT_DIM)
+-    if v["auto"]:
+-        pill = pygame.Rect(rect.right - 112, y - 2, 98, 20)
+-        theme.rrect(surface, theme.ACCENT, pill, 10)
+-        theme.text(surface, "AUTO REACH", pill.center, 16, theme.DARK, anchor="center")
+-
+-    if v["active"]:
+-        theme.text(surface, "Reach for", (x, y + 26), 20, theme.TEXT)
+-        key = pygame.Rect(x + 86, y + 20, 44, 34)
+-        theme.rrect(surface, theme.AMBER, key, 8)
+-        theme.text(surface, v["goal"], key.center, 28, theme.DARK, anchor="center")
+-        theme.text(surface, "and click it", (key.right + 10, y + 26), 20, theme.TEXT)
+-        theme.text(surface, f"{v['elapsed']:.1f} s", (rect.right - 14, y + 24), 28, theme.TEXT, anchor="topright")
+-    elif v["last"] is not None:
+-        _mode, r = v["last"]
+-        label, color = OUTCOME_STYLE[r.outcome]
+-        theme.text(surface, label, (x, y + 22), 30, color)
+-        detail = f"{r.elapsed:.2f} s"
+-        if r.outcome == "wrong_target" and v["last_label"]:
+-            detail += f"  (clicked {v['last_label']})"
+-        theme.text(surface, detail, (x, y + 52), 20, theme.TEXT)
+-    else:
+-        theme.text(surface, "Press SPACE to start", (x, y + 24), 22, theme.TEXT)
+-        theme.text(surface, "R = auto reach (synthetic)", (x, y + 48), 18, theme.TEXT_DIM)
+-
+-    st = v["stats"]
+-    pygame.draw.line(surface, (60, 70, 130), (x, rect.y + 82), (rect.right - 14, rect.y + 82))
+-    theme.text(surface, f"Mode: {v['mode'].upper()}", (x, rect.y + 90), 18, theme.TEXT_DIM)
+-    if st["n"]:
+-        rate = st["success_rate"] * 100
+-        med = f"{st['median_time']:.2f} s" if st["median_time"] is not None else "-"
+-        theme.text(surface, f"{st['success']}/{st['n']} ok ({rate:.0f}%)   median {med}", (x, rect.y + 108), 19,
+-                   theme.TEXT)
+-        theme.text(surface, f"wrong {st['wrong_target']}  miss {st['miss']}  timeout {st['timeout']}",
+-                   (rect.right - 14, rect.y + 91), 16, theme.TEXT_DIM, anchor="topright")
+-    else:
+-        theme.text(surface, "No trials in this mode yet", (x, rect.y + 108), 18, theme.TEXT_DIM)

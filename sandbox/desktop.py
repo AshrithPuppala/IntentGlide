@@ -9,7 +9,6 @@ The simulated cursor is drawn by the caller (so the side panel can sit under it)
 """
 from __future__ import annotations
 
-import math
 import time
 from typing import Optional
 
@@ -21,11 +20,9 @@ from sandbox.models import BenchmarkModel, SettingsModel
 from sandbox.scatter import scatter_icon_positions
 from sandbox.settings_window import attach_settings
 from sandbox.widgets import Widget, Window
-from shared.contracts import Target
 from visualization import theme
 from visualization.cursor_canvas import draw_polyline
 from visualization.icons import draw_app_icon, draw_start_glyph
-from visualization.trial_hud import hud_rect
 
 WINDOW_SPECS = {
     "notepad": ("Notepad", 460, 320, ["Untitled - Notepad", "",
@@ -57,7 +54,6 @@ class Desktop:
         self.raw_trail: list[tuple[float, float]] = []
         self.output_trail: list[tuple[float, float]] = []
         self.last_clicked: Optional[str] = None
-        self.goal_id: Optional[str] = None        # widget id highlighted as the current trial goal
         self._wallpaper: Optional[pygame.Surface] = None
 
         # Icon widgets include the caption, like a real desktop icon.
@@ -82,7 +78,6 @@ class Desktop:
         avoid = [
             (0, 0, 120, self.height),                              # the original icon column
             (0, self.height - self.TASKBAR_H - 8, self.width, self.TASKBAR_H + 8),   # taskbar
-            tuple(hud_rect(self.width)),                           # trial HUD, top right
             (160, 40, cw, ch),                                     # where the calculator opens
         ]
         area = (124, 16, self.width - 124 - 12, self.height - self.TASKBAR_H - 16 - 12)
@@ -174,11 +169,6 @@ class Desktop:
         items += [i for i in self.icons if not self._icon_covered(i)]
         items += [self.start_btn, self.show_desktop_btn]
         return items
-
-    def keypad_targets(self) -> list[Target]:
-        """The calculator keys as Targets (empty if the calculator is closed)."""
-        win = next((w for w in self.windows if w.id == "calculator"), None)
-        return [w.to_target() for w in win.widgets] if win else []
 
     @property
     def targets(self):
@@ -273,24 +263,12 @@ class Desktop:
         for win in self.windows:
             win.draw(surface, active=win is top)
 
-        self._draw_goal(surface)
         if self.menu_open:
             self._draw_menu(surface)
         self._draw_taskbar(surface)
 
         draw_polyline(surface, self.raw_trail, (170, 120, 210), 1)
         draw_polyline(surface, self.output_trail, (80, 225, 190), 2)
-
-    def _draw_goal(self, surface):
-        """Pulsing amber ring around the key the current trial asks the user to reach."""
-        if not self.goal_id:
-            return
-        widget = next((w for w in self._reachable() if w.id == self.goal_id), None)
-        if widget is None:
-            return
-        pulse = 0.5 + 0.5 * math.sin(time.monotonic() * 6.0)
-        ring = widget.rect.inflate(8 + int(4 * pulse), 8 + int(4 * pulse))
-        pygame.draw.rect(surface, theme.AMBER, ring, width=3 + int(pulse * 1.5), border_radius=10)
 
     def _draw_menu(self, surface):
         theme.drop_shadow(surface, self.menu_rect, radius=12, spread=14, strength=12)
