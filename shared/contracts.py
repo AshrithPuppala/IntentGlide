@@ -122,3 +122,15 @@ class GroundTruthLabel:
     ambiguous: bool
     rival_target_id: Optional[str]
     override: bool = False
+
+@dataclass
+class TrialResult:
+    trial_id: int
+    intended_target_id: str
+    clicked_target_id: Optional[str]
+    outcome: str
+    success: bool
+    start_time: float
+    end_time: float
+    elapsed: float
+    miss_count: int = 0
