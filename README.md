@@ -24,7 +24,7 @@ The project is divided into four independently testable modules. **Person 4 is t
 | **Person 1** | Input acquisition & hardware | Mouse events, synthetic disturbances, ESP32 vibration rig | `input/`, `hardware/` |
 | **Person 2** | Signal processing & adaptive filtering | Motion analysis, Butterworth baseline, adaptive smoothing | `dsp/` |
 | **Person 3** | Intent recognition & safety | Target confidence, bounded guidance, abstention, click safety | `interaction/` |
-| **Person 4** | Application, orchestration & evaluation | Pygame interface, integration, visualization, benchmark dashboard | `app/`, `visualization/`, `evaluation/` |
+| **Person 4** | Sandbox, application, orchestration & evaluation | Interactive test environment, Pygame interface, integration, visualization, benchmark dashboard | `sandbox/`, `app/`, `visualization/`, `evaluation/` |
 
 ### Person 1 — Input Acquisition & Hardware
 
@@ -125,21 +125,29 @@ Tasks:
 
 ### Person 4 — Application, Orchestration & Benchmarking
 
-**Goal:** Keep the full application running from hour one and integrate each module incrementally.
+**Goal:** Build the interactive cursor-control sandbox, keep the full application running from hour one, and integrate each module incrementally.
+
+**What the sandbox means:** The sandbox is the controlled on-screen environment in which IntentGlide is tested. It is not a separate operating-system driver. It contains the drawing area, target buttons, target layouts, task scenarios, and the interaction loop used to compare raw, fixed-filter, adaptive, and full-system behavior. The application launches and runs this sandbox.
 
 Tasks:
 
-1. Create the Pygame application shell with a cursor canvas, different-sized targets, mode selector, diagnostics panel, and controls.
-2. Create mock implementations of input, DSP, and intent modules so the complete application can run before teammates finish their code.
-3. Implement the orchestration loop that calls the modules in the agreed order.
-4. Build the four comparison modes: raw, fixed filter, adaptive filter, and full system.
-5. Render raw and processed trajectories, controller state, candidate target, and assistance indicators.
-6. Implement benchmark logging and metrics.
-7. Replace mocks with real modules one at a time, testing the full application after each replacement.
-8. Keep `main` runnable and coordinate merges.
+1. Build the sandbox scene: a Pygame workspace with a drawing area, selectable targets of different sizes, closely spaced/ambiguous targets, and a simple target-acquisition task.
+2. Add task controls: start trial, reset trial, choose target layout, choose target size, and switch between drawing and target-selection tasks.
+3. Make the sandbox expose target geometry and current task state to the intent controller.
+4. Create the Pygame application shell around the sandbox with a mode selector, diagnostics panel, and controls.
+5. Create mock implementations of input, DSP, and intent modules so the complete application can run before teammates finish their code.
+6. Implement the orchestration loop that calls the modules in the agreed order.
+7. Build the four comparison modes: raw, fixed filter, adaptive filter, and full system.
+8. Render raw and processed trajectories, controller state, candidate target, and assistance indicators.
+9. Implement benchmark logging and metrics.
+10. Replace mocks with real modules one at a time, testing the full application after each replacement.
+11. Keep `main` runnable and coordinate merges.
 
 **Deliverables:**
 
+- `sandbox/scene.py`
+- `sandbox/targets.py`
+- `sandbox/tasks.py`
 - `app/main.py`
 - `app/orchestrator.py`
 - `visualization/cursor_canvas.py`
@@ -152,6 +160,23 @@ Tasks:
 **Definition of done:** The app launches with one command, supports all four modes, displays live diagnostics, and completes the primary demo from start to finish.
 
 ---
+
+## 2.1 Where the sandbox lives
+
+The **sandbox is a first-class project module**, not just a name for the Pygame window. It is the controlled interaction environment used to test IntentGlide. Person 4 owns the sandbox implementation; Person 1 provides the input stream that moves the cursor through it.
+
+The sandbox should contain:
+
+- **Cursor workspace:** a bounded canvas where the raw and processed cursor trajectories are drawn.
+- **Target bank:** buttons/targets with configurable sizes, spacing, and positions.
+- **Ambiguity scenario:** two or more nearby targets that can be similarly plausible, to test whether the intent controller abstains.
+- **Drawing task:** a reference path that the user attempts to trace, allowing trajectory error to be measured in synthetic tests.
+- **Target-acquisition task:** a sequence of target selections with success, completion time, and wrong-target activations recorded.
+- **Trial controls:** start, pause, reset, choose task, choose target layout, and select input source.
+
+**Important separation:** the sandbox owns the test scene and task logic; the input module supplies pointer samples; the DSP module filters them; the intent module returns assistance decisions; the app/orchestrator connects the pieces; the visualization layer draws diagnostics.
+
+The sandbox is launched through `app/main.py` and is not intended to replace or simulate a system-wide mouse driver.
 
 ## 2. System architecture and data flow
 
@@ -274,7 +299,11 @@ Person 4 uses these mocks to build the full application first. Persons 2 and 3 u
 intentglide/
 ├── README.md
 ├── requirements.txt
-├── app/                         # Person 4
+├── sandbox/                     # Person 4: interactive test environment
+│   ├── scene.py                 # Main test area / drawing surface
+│   ├── targets.py               # Target positions, sizes and layouts
+│   └── tasks.py                 # Target-selection and drawing scenarios
+├── app/                         # Person 4: application and integration
 │   ├── main.py
 │   └── orchestrator.py
 ├── input/                       # Person 1
@@ -326,11 +355,12 @@ This proves that the application flow and UI work before the algorithmic modules
 
 ### Replace mocks one at a time
 
-1. Replace mock input with Person 1's synthetic generator and verify the input contract.
-2. Replace mock DSP with Person 2's analyzer and filters; verify fixed and adaptive outputs.
-3. Replace mock intent logic with Person 3's controller and safety layer.
-4. Connect hardware as an optional source only after the synthetic path works.
-5. Run integration tests after each replacement.
+1. Launch the sandbox with its built-in target layouts and task scenarios.
+2. Connect Person 1's synthetic generator to the sandbox and verify the input contract.
+3. Replace mock DSP with Person 2's analyzer and filters; verify fixed and adaptive outputs.
+4. Replace mock intent logic with Person 3's controller and safety layer.
+5. Connect hardware as an optional source only after the synthetic path works.
+6. Run integration tests after each replacement.
 
 Do not replace all mocks simultaneously. It makes interface bugs harder to isolate.
 
@@ -406,14 +436,15 @@ Team rules:
 
 **Scenario:** Select a small target under a controlled oscillatory disturbance.
 
-1. The synthetic generator creates a known intended cursor path with an imposed 8 Hz disturbance.
-2. Person 1's input module emits timestamped raw coordinates.
-3. Person 2's DSP module estimates motion features and generates fixed and adaptive outputs.
-4. Person 3's intent controller evaluates the candidate target.
-5. If intent confidence is high, the system applies bounded guidance.
-6. If two nearby targets become similarly plausible, the system abstains from guidance.
-7. Person 4's application displays raw, fixed-filter, adaptive, and full-system paths.
-8. The benchmark logger records task outcomes and processing diagnostics.
+1. Person 4 launches the sandbox with a target-selection or drawing task.
+2. The sandbox exposes target positions, sizes, and task state to the application.
+3. Person 1's synthetic generator creates a known intended cursor path with an imposed 8 Hz disturbance and emits timestamped samples.
+4. Person 2's DSP module estimates motion features and generates fixed and adaptive outputs.
+5. Person 3's intent controller evaluates the candidate target using the sandbox target geometry.
+6. If intent confidence is high, the system applies bounded guidance.
+7. If two nearby targets become similarly plausible, the system abstains from guidance.
+8. Person 4's application displays raw, fixed-filter, adaptive, and full-system paths inside the sandbox.
+9. The benchmark logger records task outcomes and processing diagnostics.
 
 ### Hardware demonstration
 
@@ -421,7 +452,7 @@ Repeat the scenario with the motor switched on, if the physical rig is reliable.
 
 ### Guaranteed fallback
 
-The synthetic scenario must demonstrate the complete software pipeline if the physical motor rig fails during the presentation.
+The synthetic scenario must demonstrate the complete software pipeline if the physical motor rig fails during the presentation. The sandbox itself must still run: it supplies the targets and tasks, while the synthetic generator supplies repeatable disturbed cursor input.
 
 ---
 
