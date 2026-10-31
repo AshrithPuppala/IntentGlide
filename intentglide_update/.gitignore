@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs and generated results
+*.log
+*.csv
+results/raw/
+evaluation/results/*
+!evaluation/results/.gitkeep
+
+# Local datasets and trained models
+data/generated/*
+!data/generated/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+ml/artifacts/*
+!ml/artifacts/.gitkeep

@@ -22,7 +22,17 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
-# Generated outputs
+# Logs and generated results
 *.log
-results/raw/
 *.csv
+results/raw/
+evaluation/results/*
+!evaluation/results/.gitkeep
+
+# Local datasets and trained models
+data/generated/*
+!data/generated/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+ml/artifacts/*
+!ml/artifacts/.gitkeep

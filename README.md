@@ -1,238 +1,446 @@
-# IntentGlide — Team Workflow & Development Plan
+# IntentGlide — ML-Guided Adaptive Cursor Stabilization
 
-**Adaptive Cursor Assistance for Fine-Motor Accessibility**  
-**Hackathon track:** Human-Machine Interfaces (HMI)  
+**Project:** Adaptive cursor assistance for fine-motor accessibility  
+**Track:** Human-Machine Interfaces (HMI)  
+**Team size:** 4 members  
 **Build window:** 24 hours  
-**Team size:** 4 members
+**Core approach:** Classical DSP + ML-guided adaptive filtering + confidence-aware interaction
 
 > **Less unwanted motion. More intentional control.**
 
-IntentGlide is a prototype HMI system that explores how adaptive signal processing and confidence-aware target assistance can make pointer interaction more manageable for people experiencing tremor-related or other fine-motor difficulties.
+IntentGlide is an engineering prototype that explores how adaptive signal processing and learned filter control can make pointer interaction more manageable for people experiencing tremor-related or other fine-motor difficulties.
 
-The project analyses timestamped pointer movement, estimates tremor-like oscillatory components, adjusts cursor smoothing, and provides bounded target guidance only when the likely target is sufficiently clear. When intent is ambiguous, the system abstains from directional assistance. The user can always disable assistance.
+The system analyses timestamped cursor movement, extracts movement characteristics, selects an appropriate smoothing strength, and filters the pointer trajectory. A separate intent controller can provide small, bounded target guidance only when one target is sufficiently likely. When target intent is ambiguous, the system abstains. Assistance must remain visible, reversible, and user-controlled.
 
-This README defines the team split, module boundaries, shared interfaces, repository structure, integration plan, timeline, and demo scenario for a coordinated 24-hour build.
-
----
-
-## 1. Team structure and ownership
-
-The project is divided into four independently testable modules. **Person 4 is the integration owner** and must keep a runnable application available from the first hour using mocked versions of the other modules.
-
-| Member | Module | Primary responsibility | Owns |
-|---|---|---|---|
-| **Person 1** | Input acquisition & hardware | Mouse events, synthetic disturbances, ESP32 vibration rig | `input/`, `hardware/` |
-| **Person 2** | Signal processing & adaptive filtering | Motion analysis, Butterworth baseline, adaptive smoothing | `dsp/` |
-| **Person 3** | Intent recognition & safety | Target confidence, bounded guidance, abstention, click safety | `interaction/` |
-| **Person 4** | Sandbox, application, orchestration & evaluation | Interactive test environment, Pygame interface, integration, visualization, benchmark dashboard | `sandbox/`, `app/`, `visualization/`, `evaluation/` |
-
-### Person 1 — Input Acquisition & Hardware
-
-**Goal:** Provide reliable timestamped pointer samples and repeatable disturbance inputs to the DSP engine.
-
-Tasks:
-
-1. Build a synthetic input generator that creates an intended cursor trajectory with a configurable oscillatory disturbance.
-2. Support a configurable disturbance frequency in the 4–12 Hz test range and adjustable amplitude.
-3. Capture real mouse movement through Pygame mouse events, preserving timestamps and actual sample intervals.
-4. Build the ESP32 motor-control circuit using an ERM vibration motor and a suitable MOSFET driver.
-5. Mount the motor securely to the mouse chassis and verify its vibration frequency with an optional accelerometer, where available.
-6. Provide a switch between synthetic input and the physical-hardware demonstration source.
-7. Ensure the synthetic generator works independently of the physical hardware.
-
-**Deliverables:**
-
-- `input/input_provider.py`
-- `input/synthetic_generator.py`
-- `hardware/esp32_controller.ino`
-- `tests/test_input.py`
-
-**Handoff:** A stream of `InputSample` objects.
-
-**Definition of done:** Person 2 can run the input generator independently and receive valid coordinates, timestamps, source information, and optional sensor readings without requiring the physical rig.
-
-**Important:** Do not assume Pygame mouse events arrive at exactly 120 Hz. Preserve event timestamps and calculate using actual sample intervals. The synthetic generator may use a controlled 120 Hz sample clock for repeatable DSP tests.
-
-### Person 2 — Signal Processing & Adaptive Filtering
-
-**Goal:** Build the signal-processing engine that estimates motion characteristics and produces fixed and adaptive cursor outputs.
-
-Tasks:
-
-1. Implement a motion analyzer that calculates cursor velocity, high-frequency oscillation energy, periodicity confidence, directional consistency, and a normalized oscillation score.
-2. Implement a stateful second-order Butterworth low-pass filter as the fixed-filter baseline. Use a nominal 3 Hz cutoff at a 120 Hz analysis rate for the initial comparison.
-3. Implement adaptive exponential smoothing:
-
-   ```python
-   filtered_position = previous_filtered_position + alpha * (
-       current_input_position - previous_filtered_position
-   )
-   ```
-
-4. Adjust `alpha` within predefined bounds using motion features and controller context. Smaller `alpha` means stronger smoothing and potentially more lag; larger `alpha` means more responsive movement.
-5. Smooth parameter changes to avoid abrupt cursor behavior.
-6. Preserve the filter's internal state across samples.
-7. Return diagnostics including filter strength, oscillation score, dominant-frequency estimate, and processing time.
-
-**Deliverables:**
-
-- `dsp/motion_analyzer.py`
-- `dsp/fixed_filter.py`
-- `dsp/adaptive_filter.py`
-- `tests/test_dsp.py`
-
-**Handoff:** `MotionFeatures` and `FilterOutput` objects for fixed and adaptive modes.
-
-**Definition of done:** Given the same input sequence, both filter implementations consistently produce valid output trajectories and can run independently of the UI and ESP32.
-
-### Person 3 — Intent Recognition & Interaction Safety
-
-**Goal:** Decide when the system should provide bounded assistance and when it should refrain from intervening.
-
-Tasks:
-
-1. Maintain a list of candidate targets and their coordinates and dimensions.
-2. Calculate cursor-to-target distance.
-3. Calculate directional alignment between current movement and each candidate target.
-4. Evaluate target ambiguity when multiple targets are similarly plausible.
-5. Produce target-confidence values using distance, directional alignment, and target uniqueness.
-6. Apply small, bounded directional guidance only when assistance is justified and confidence is sufficiently high.
-7. Implement the controller states below.
-8. Add immediate manual override, cancellation when the user moves away, visible assistance state, and optional uncertain-click protection.
-9. Test clear-target, ambiguous-target, movement-away, high-speed intentional movement, and override cases.
-
-**Controller states:**
-
-| State | Expected behavior |
-|---|---|
-| `stable` | Normal filtered cursor movement; no target guidance |
-| `oscillation_detected` | Use the selected filtering mode; expose motion diagnostics |
-| `target_confident` | Apply bounded directional guidance to the leading target |
-| `target_ambiguous` | Abstain from directional guidance; leave the user in control |
-| `override` | Disable assistance immediately and return to direct filtered or raw control, according to the selected mode |
-
-**Deliverables:**
-
-- `interaction/target_analyzer.py`
-- `interaction/intent_controller.py`
-- `interaction/assistance.py`
-- `interaction/interaction_safety.py`
-- `tests/test_intent.py`
-
-**Handoff:** An `IntentDecision` containing controller state, candidate target, confidence, and bounded assistance offset.
-
-**Definition of done:** The controller assists when one target is sufficiently clear, abstains when targets are ambiguous, and always respects manual override.
-
-### Person 4 — Application, Orchestration & Benchmarking
-
-**Goal:** Build the interactive cursor-control sandbox, keep the full application running from hour one, and integrate each module incrementally.
-
-**What the sandbox means:** The sandbox is the controlled on-screen environment in which IntentGlide is tested. It is not a separate operating-system driver. It contains the drawing area, target buttons, target layouts, task scenarios, and the interaction loop used to compare raw, fixed-filter, adaptive, and full-system behavior. The application launches and runs this sandbox.
-
-Tasks:
-
-1. Build the sandbox scene: a Pygame workspace with a drawing area, selectable targets of different sizes, closely spaced/ambiguous targets, and a simple target-acquisition task.
-2. Add task controls: start trial, reset trial, choose target layout, choose target size, and switch between drawing and target-selection tasks.
-3. Make the sandbox expose target geometry and current task state to the intent controller.
-4. Create the Pygame application shell around the sandbox with a mode selector, diagnostics panel, and controls.
-5. Create mock implementations of input, DSP, and intent modules so the complete application can run before teammates finish their code.
-6. Implement the orchestration loop that calls the modules in the agreed order.
-7. Build the four comparison modes: raw, fixed filter, adaptive filter, and full system.
-8. Render raw and processed trajectories, controller state, candidate target, and assistance indicators.
-9. Implement benchmark logging and metrics.
-10. Replace mocks with real modules one at a time, testing the full application after each replacement.
-11. Keep `main` runnable and coordinate merges.
-
-**Deliverables:**
-
-- `sandbox/scene.py`
-- `sandbox/targets.py`
-- `sandbox/tasks.py`
-- `app/main.py`
-- `app/orchestrator.py`
-- `visualization/cursor_canvas.py`
-- `visualization/diagnostics.py`
-- `visualization/dashboard.py`
-- `evaluation/benchmark.py`
-- `evaluation/metrics.py`
-- `tests/test_integration.py`
-
-**Definition of done:** The app launches with one command, supports all four modes, displays live diagnostics, and completes the primary demo from start to finish.
+> **Implementation status:** The current repository contains a Python/Pygame baseline, synthetic input, FFT-based motion analysis, a fixed Butterworth filter, a heuristic adaptive smoother, rule-based target scoring, tests, and starter ESP32 firmware. The trained ML filter controller in this plan is the next development stage; it is **not yet implemented or integrated** in the current application. Planned modules are identified as planned throughout this README.
 
 ---
 
-## 2.1 Where the sandbox lives
+## 1. Project goals
 
-The **sandbox is a first-class project module**, not just a name for the Pygame window. It is the controlled interaction environment used to test IntentGlide. Person 4 owns the sandbox implementation; Person 1 provides the input stream that moves the cursor through it.
+IntentGlide aims to:
 
-The sandbox should contain:
+1. Identify oscillatory components in pointer movement without claiming to diagnose a medical condition.
+2. Preserve intentional cursor movement while reducing unwanted high-frequency motion.
+3. Learn a suitable filtering strength from movement features instead of relying only on a manually defined rule.
+4. Keep signal analysis, filter selection, cursor filtering, target assistance, and safety logic as separate components.
+5. Evaluate improvements against fixed and rule-based baselines using repeatable tasks and measurable outcomes.
+6. Remain runnable without physical hardware or a trained model by retaining synthetic input and a deterministic fallback.
 
-- **Cursor workspace:** a bounded canvas where the raw and processed cursor trajectories are drawn.
-- **Target bank:** buttons/targets with configurable sizes, spacing, and positions.
-- **Ambiguity scenario:** two or more nearby targets that can be similarly plausible, to test whether the intent controller abstains.
-- **Drawing task:** a reference path that the user attempts to trace, allowing trajectory error to be measured in synthetic tests.
-- **Target-acquisition task:** a sequence of target selections with success, completion time, and wrong-target activations recorded.
-- **Trial controls:** start, pause, reset, choose task, choose target layout, and select input source.
+A smoother cursor is not automatically a better cursor. Excessive smoothing can increase lag, suppress intentional rapid movement, and reduce task performance. We must measure both unwanted-motion reduction and preservation of intended movement.
 
-**Important separation:** the sandbox owns the test scene and task logic; the input module supplies pointer samples; the DSP module filters them; the intent module returns assistance decisions; the app/orchestrator connects the pieces; the visualization layer draws diagnostics.
+## 2. Current implementation vs planned work
 
-The sandbox is launched through `app/main.py` and is not intended to replace or simulate a system-wide mouse driver.
+This section is the source of truth for implementation status.
 
-## 2. System architecture and data flow
+### Already present in the repository
+
+- Python application launched through Pygame.
+- Synthetic cursor trajectory generator with configurable sinusoidal disturbance.
+- Pygame mouse-event adapter that emits timestamped mouse samples.
+- Motion analysis with timestamp resampling, detrending, a Hann window, FFT, and power analysis in a 4–12 Hz engineering test band.
+- Second-order Butterworth low-pass baseline.
+- Rule-based adaptive exponential smoothing with bounded alpha and rate-limited changes.
+- Target ranking based on proximity and movement-direction alignment.
+- Confidence threshold, ambiguity-margin logic, bounded directional assistance, and manual-override helper.
+- Pygame sandbox, target-layout generation, and task scaffolding.
+- ESP32 starter firmware for an ERM vibration motor.
+- CSV benchmark logger, basic metrics, and unit/integration tests.
+
+### Not yet implemented or not fully integrated
+
+- ML training dataset and optimal-alpha label generation.
+- Random Forest regression training and validated model artifact.
+- Runtime loading and inference of a trained ML filter policy.
+- ML-vs-heuristic-vs-fixed-filter evaluation on held-out scenarios.
+- Expanded, fully documented X/Y feature extraction.
+- A complete Python-to-ESP32 serial integration.
+- A live-mouse path connected to the main app loop.
+
+The current `MotionAnalyzer` estimates its frequency-domain signal using the X coordinate; do not describe it as complete two-dimensional tremor estimation until X and Y analysis is implemented and tested. The current main application uses synthetic input. The mouse adapter exists, but is not yet wired into the primary demo loop. The hardware sketch is starter firmware, not a complete host-to-device integration.
+
+Real mouse events are not guaranteed to arrive at 120 Hz. Preserve actual timestamps and explicitly resample to a uniform grid where an algorithm requires uniform sampling. The current Butterworth baseline assumes a uniform 120 Hz analysis stream.
+
+## 3. Proposed system architecture
+
+The proposed architecture separates movement measurement, filter selection, filtering, and interaction assistance.
 
 ```mermaid
 flowchart TD
-    A[Person 1: Input Acquisition\nMouse / Synthetic / ESP32] -->|InputSample| B[Person 2: Motion Analyzer]
-    B -->|MotionFeatures| C[Person 2: Filter Engine]
-    C -->|Fixed + Adaptive FilterOutput| D[Person 3: Intent Controller]
-    D -->|IntentDecision| E[Person 3: Safety & Assistance]
-    E -->|Assisted Cursor Output| F[Person 4: Pygame Application]
-    F --> G[Visualization: Raw vs Processed Paths]
-    F --> H[Evaluation: Metrics & Logs]
-    B -. diagnostics .-> F
-    C -. filter metrics .-> F
+    A[Input acquisition: Mouse / Synthetic / Optional ESP32] --> B[Timestamp-aware preprocessing]
+    B --> C[Motion features: FFT / amplitude / velocity / acceleration / jerk]
+    C --> D[ML filter policy: Random Forest Regressor]
+    D --> E[Alpha bounds + rate limit + fallback]
+    E --> F[Adaptive DSP filter]
+    C --> G[Fixed Butterworth baseline]
+    F --> H[Intent + interaction safety]
+    I[Sandbox targets + task state] --> H
+    H --> J[Pygame application + cursor output]
+    G --> J
+    J --> K[Visualization + diagnostics]
+    J --> L[Benchmarking + evaluation]
 ```
 
 ### Processing order
 
-1. Person 1 produces a timestamped `InputSample`.
-2. Person 2 updates motion features and generates fixed/adaptive filtered positions.
-3. Person 3 evaluates candidate targets and determines whether to assist or abstain.
-4. Person 3's safety layer applies bounded guidance or passes through the filtered position unchanged.
-5. Person 4 renders the raw and output paths, controller state, and metrics.
-6. The evaluation module records the sample and outcomes.
+1. **Input — Person 1:** produce timestamped pointer samples and scenario/ground-truth metadata.
+2. **Feature extraction — Person 2:** preprocess samples and calculate documented motion features.
+3. **ML filter policy — Person 3:** predict a suitable target alpha from the feature vector.
+4. **DSP filtering — Person 2:** apply the target alpha through a stateful filter, with bounds and rate limiting.
+5. **Intent and safety — Person 4:** evaluate targets, apply bounded guidance only when justified, and abstain when intent is ambiguous.
+6. **Application and evaluation — Person 4:** render the sandbox, expose diagnostics, and record outcomes.
 
-**Integration owner:** Person 4 owns the orchestration layer. Other members should expose simple functions/classes that accept and return the shared data structures. Avoid cross-importing internal implementation details between teammates.
+The ML model does **not** directly move the cursor. It recommends the filter parameter; the DSP filter performs the actual signal transformation. Target-intent scoring is a separate rule-based component in the first ML version.
 
----
+### Controlled signal model
 
-## 3. Shared interfaces — agree these before coding
+For synthetic experiments, a disturbed cursor coordinate can be modelled as:
 
-Create `shared/contracts.py`. All members must import these definitions rather than independently creating similar structures.
+\[
+x_{observed}(t) = x_{intended}(t) + d(t) + \epsilon(t)
+\]
+
+where `x_intended` is the known intended trajectory, `d(t)` is an imposed oscillatory disturbance, and `epsilon(t)` is additional noise. The existing generator uses a configurable 4–12 Hz disturbance range for engineering tests. This is not a clinical definition of tremor. The ERM vibration rig produces a controlled physical disturbance, not a clinically accurate model of a condition.
+
+## 4. ML-guided adaptive filtering
+
+### Why add machine learning?
+
+The current adaptive filter uses a manually defined relationship between oscillation score and alpha. This is a useful baseline, but it can confuse different movement contexts. A deliberate fast movement and an intended smooth movement contaminated by oscillation can both contain high-frequency components. A single hand-written rule may smooth both too strongly or too weakly.
+
+The proposed model learns how motion features relate to a suitable filtering strength. It does **not** replace the DSP filter. The model recommends a parameter; the DSP engine applies it.
+
+### Initial model: Random Forest Regression
+
+Start with `sklearn.ensemble.RandomForestRegressor`.
+
+- The initial inputs are structured numerical features.
+- It can learn nonlinear relationships without a large neural network.
+- It is relatively quick to train and evaluate.
+- Feature importance can help inspect which inputs influence predictions.
+- It gives us a sensible baseline before exploring temporal deep-learning models.
+
+Possible future models include XGBoost, a 1D CNN, or a GRU/LSTM only if experiments show that engineered window-level features are insufficient.
+
+### What the model predicts
+
+The first ML milestone is regression of the adaptive smoothing parameter:
+
+\[
+\alpha_{target} = f(\mathbf{z})
+\]
+
+where `z` is a feature vector calculated from a recent cursor-movement window.
+
+The existing exponential smoother uses:
+
+\[
+\mathbf{p}_{f}[n] = \mathbf{p}_{f}[n-1] + \alpha(\mathbf{p}_{in}[n]-\mathbf{p}_{f}[n-1])
+\]
+
+- Lower alpha means stronger smoothing and potentially more lag.
+- Higher alpha means greater responsiveness and potentially more residual jitter.
+- Start with the existing bounds, `0.12 <= alpha <= 0.85`, unless controlled experiments justify changing them.
+- Rate-limit alpha changes to avoid abrupt cursor behaviour.
+
+The model is a **filter-policy regressor**, not a medical tremor classifier and not a predictor of future tremor events.
+
+### Candidate input features
+
+| Feature | Purpose |
+|---|---|
+| X/Y spectral power | Measure oscillatory energy separately by axis |
+| Dominant frequency | Identify the strongest component in the selected frequency band |
+| Estimated oscillation amplitude | Estimate the magnitude of periodic movement |
+| Oscillation-band energy ratio | Compare energy in the test band with total non-zero-frequency energy |
+| Periodicity confidence | Estimate how concentrated the strongest spectral peak is |
+| Velocity | Describe cursor movement speed |
+| Acceleration | Describe changes in movement speed and direction |
+| Jerk | Describe rapid changes in acceleration |
+| Directional consistency | Describe how consistently movement follows one direction |
+| Spectral entropy | Describe how concentrated or spread out spectral energy is |
+| Optional task context | Supply controlled interaction context without leaking target labels |
+
+Person 2 must define the feature names, units, window length, normalization, missing-value handling, and exact feature order. Training and runtime must use the same schema.
+
+### Training labels: estimate an optimal alpha
+
+Person 1 generates synthetic scenarios with known intended paths. Person 3 uses those traces to construct supervised training examples.
+
+For each training example:
+
+1. Use only the past/current movement window to calculate the model input features.
+2. For offline label generation, evaluate candidate alpha values with the same causal, stateful exponential filter over a defined subsequent evaluation horizon.
+3. Compare each candidate's filtered output with the known intended path.
+4. Measure tracking error, residual unwanted high-frequency motion, and lag.
+5. Select the alpha with the lowest pre-agreed combined objective.
+
+A starting objective is:
+
+\[
+J(\alpha)=w_eE_{tracking}(\alpha)+w_jE_{jitter}(\alpha)+w_lE_{lag}(\alpha)
+\]
+
+\[
+\alpha^*=\underset{\alpha\in[0.12,0.85]}{\operatorname{argmin}}J(\alpha)
+\]
+
+The weights, normalization, candidate-alpha grid, filter initialization, warm-up period, and evaluation horizon must be documented and fixed before final test evaluation. Do not optimize only for smoothness: a cursor that barely moves could otherwise appear artificially good. Penalize tracking error and lag as well as residual jitter.
+
+The model input must not contain future samples from the label horizon. Future samples may be used only offline to derive the training target alpha; this mirrors a policy learning what alpha would have worked best after observing the past window.
+
+### Dataset strategy and generalization
+
+Synthetic data is a good first step because the intended trajectory is known. Vary:
+
+- Disturbance frequency, amplitude, axis, phase, and noise.
+- Intended movement speed, direction, curvature, and trajectory shape.
+- Smooth movement, fast movement, starts, stops, pauses, reversals, and corrective movement.
+- Target size, spacing, and ambiguous-target layouts.
+- Sample timing irregularity and input source.
+
+Split by complete trajectories, scenario IDs, or generation seeds. Do not randomly split adjacent overlapping windows from the same trace across train and test; that can produce misleadingly high scores through leakage. Keep a final held-out test set untouched until model and objective choices are frozen.
+
+Synthetic data supports controlled engineering evaluation, but does not establish real-world clinical or accessibility performance. Any later real-user validation requires appropriately consented data and a separate evaluation protocol.
+
+### Runtime safeguards and fallback
+
+The runtime ML policy must:
+
+- Validate that all expected features are present and finite.
+- Use the exact feature schema and preprocessing used during training.
+- Clamp alpha to the allowed range and rate-limit changes.
+- Expose whether the active policy is `ml` or `heuristic_fallback`.
+- Fall back to the existing rule-based alpha policy if the model artifact is missing, malformed, or inference fails.
+- Log model/policy version and inference time.
+- Avoid claiming calibrated model confidence unless a suitable uncertainty method has been implemented and validated.
+
+## 5. Four-person work distribution
+
+The project is split into four independently testable workstreams. Person 1 takes responsibility for target layouts and sandbox task definitions to balance the work. Person 4 retains Pygame rendering and integration. File ownership is explicit to minimize merge conflicts.
+
+### Person 1 — Input, Hardware, Data Generation & Sandbox Scenarios
+
+**Goal:** Provide reliable input streams and repeatable scenarios with known intended trajectories.
+
+**Responsibilities**
+
+1. Implement synthetic input with configurable intended paths.
+2. Add disturbance profiles with configurable frequency, amplitude, axis, phase, and noise.
+3. Capture real Pygame mouse events while preserving actual timestamps.
+4. Build/test the optional ESP32 + ERM vibration rig using an appropriate motor driver.
+5. Generate ground-truth intended trajectories and scenario metadata for training/evaluation.
+6. Own target geometry and target-layout generation.
+7. Own task/scenario definitions: standard targets, small targets, closely spaced targets, and ambiguous-target layouts.
+8. Keep input and scenario generation usable without physical hardware.
+
+**Owns:** `input/`, `hardware/`, `sandbox/targets.py`, `sandbox/tasks.py`, input/scenario tests.
+
+**Deliverables:** `input/input_provider.py`, `input/synthetic_generator.py`, planned `input/disturbance_profiles.py`, `hardware/esp32_controller.ino`, `sandbox/targets.py`, `sandbox/tasks.py`, `tests/test_input.py`, planned `tests/test_scenarios.py`.
+
+**Handoff:** timestamped `InputSample` objects, target geometry, task configuration, and ground-truth scenario metadata.
+
+**Boundary:** Person 1 owns target definitions and task logic, not Pygame rendering or the main application event loop. Person 4 owns `sandbox/scene.py`.
+
+### Person 2 — DSP & Feature Engineering
+
+**Goal:** Convert timestamped cursor movement into reliable motion features and filtered trajectories.
+
+**Responsibilities**
+
+1. Handle sample timing and preprocessing; do not assume real mouse events arrive at fixed 120 Hz.
+2. Expand motion analysis to use both X and Y movement.
+3. Calculate frequency-domain features, oscillation energy, dominant frequency, periodicity, and estimated amplitude.
+4. Calculate velocity, acceleration, jerk, directional consistency, and spectral features.
+5. Maintain the fixed second-order Butterworth baseline.
+6. Maintain the rule-based adaptive exponential filter as the baseline/fallback.
+7. Publish a stable, documented feature interface for Person 3.
+8. Test feature behaviour, filter state, edge cases, and latency.
+
+**Owns:** `dsp/` and DSP tests.
+
+**Deliverables:** existing `dsp/motion_analyzer.py`, planned `dsp/feature_extractor.py` (or keep it inside `motion_analyzer.py` if a separate file adds no value), `dsp/fixed_filter.py`, `dsp/adaptive_filter.py`, and `tests/test_dsp.py`.
+
+**Handoff:** a documented feature vector and filter outputs.
+
+**Boundary:** Person 2 owns feature calculations and DSP filters, but does not train or serialize the ML model.
+
+### Person 3 — ML & Adaptive Intelligence
+
+**Goal:** Train and deploy the model that recommends an appropriate filter strength.
+
+**Responsibilities**
+
+1. Agree on the feature schema with Person 2 before dataset generation.
+2. Load scenario traces generated by Person 1.
+3. Prepare training windows and generate optimal-alpha labels using the agreed objective.
+4. Train a Random Forest Regressor.
+5. Evaluate on held-out trajectories and scenarios.
+6. Compare ML predictions with the existing rule-based alpha policy.
+7. Save/load the trained model using joblib.
+8. Implement a small runtime interface such as `predict_alpha(features)`.
+9. Add validation, bounds, rate limiting, policy-version information, and heuristic fallback.
+10. Document limitations; do not present synthetic-only results as real-user validation.
+
+**Owns:** `ml/`, ML dataset/model-pipeline code, ML tests, and the preparation of data under `data/processed/`.
+
+**Deliverables:** planned `ml/dataset.py`, `ml/train.py`, `ml/filter_policy.py`, `ml/evaluate.py`, `ml/artifacts/` (local model artifacts), and `tests/test_ml.py`.
+
+**Handoff:** a tested model artifact and a documented inference function returning a bounded alpha value plus the active policy source.
+
+**Boundary:** Person 3 consumes feature definitions from Person 2 and scenario data from Person 1. Person 3 does not own the DSP implementation, target/task generation, or app orchestration.
+
+### Person 4 — Application, Interaction, Integration & Evaluation
+
+**Goal:** Keep a runnable application available throughout development and integrate the workstreams.
+
+**Responsibilities**
+
+1. Own the Pygame application shell and main event loop.
+2. Own `sandbox/scene.py`, including rendering target layouts supplied by Person 1.
+3. Build orchestration connecting input, features, ML policy, DSP filter, and interaction logic.
+4. Maintain raw, fixed, heuristic-adaptive, ML-adaptive, and full-system comparison modes as they become available.
+5. Own target ranking, intent confidence, ambiguity detection, bounded assistance, and manual-override integration.
+6. Render raw/filtered trajectories, features, active alpha, policy source, target confidence, and controller state.
+7. Build benchmark logging and evaluation dashboards.
+8. Create mocks so the application runs before other modules are finished.
+9. Integrate modules one at a time and run regression tests after each merge.
+10. Coordinate demo flow, presentation, and feature freeze.
+
+**Owns:** `app/`, `sandbox/scene.py`, `interaction/`, `visualization/`, `evaluation/`, and integration tests.
+
+**Deliverables:** existing/planned `app/main.py`, `app/orchestrator.py`, `sandbox/scene.py`, `interaction/target_analyzer.py`, `interaction/intent_controller.py`, `interaction/assistance.py`, `interaction/interaction_safety.py`, `visualization/`, `evaluation/`, and `tests/test_integration.py`.
+
+**Boundary:** Person 4 owns rendering and integration, not target-layout generation, feature extraction, or ML training.
+
+### Ownership summary
+
+| Work area | Owner | Handoff |
+|---|---|---|
+| `input/`, `hardware/` | P1 | Timestamped samples and disturbance scenarios |
+| `sandbox/targets.py`, `sandbox/tasks.py` | P1 | Target geometry and task configuration |
+| `dsp/` | P2 | Documented feature vectors and filtered coordinates |
+| `ml/`, processed training data | P3 | Predicted alpha and model diagnostics |
+| `app/`, `sandbox/scene.py` | P4 | Integrated interactive application |
+| `interaction/` | P4 | Intent decisions and safe assistance |
+| `visualization/`, `evaluation/` | P4 | Diagnostics and benchmark results |
+| `shared/`, shared contracts | All | Stable interfaces and mocks |
+
+## 6. Target GitHub folder structure
+
+This is the intended structure after the ML workstream is added. Items marked **NEW / PLANNED** are not necessarily present in the current repository yet. Existing files should be retained unless the team deliberately refactors them.
+
+```text
+IntentGlide/
+├── README.md
+├── START_HERE.md
+├── MANIFEST.txt
+├── requirements.txt
+├── .gitignore
+│
+├── app/                              # P4: application and orchestration
+│   ├── __init__.py
+│   ├── main.py
+│   └── orchestrator.py
+│
+├── input/                            # P1: input and scenario data
+│   ├── __init__.py
+│   ├── input_provider.py
+│   ├── synthetic_generator.py
+│   └── disturbance_profiles.py       # NEW / PLANNED
+│
+├── hardware/                         # P1: optional physical disturbance rig
+│   └── esp32_controller.ino
+│
+├── sandbox/                          # P1 scenario data; P4 rendering
+│   ├── __init__.py
+│   ├── targets.py                    # P1: target geometry and layouts
+│   ├── tasks.py                      # P1: task/scenario definitions
+│   └── scene.py                      # P4: Pygame rendering
+│
+├── dsp/                              # P2: preprocessing and signal processing
+│   ├── __init__.py
+│   ├── motion_analyzer.py
+│   ├── feature_extractor.py           # NEW / PLANNED (optional split)
+│   ├── fixed_filter.py
+│   └── adaptive_filter.py
+│
+├── ml/                               # P3: learned filter policy
+│   ├── __init__.py                   # NEW / PLANNED
+│   ├── README.md
+│   ├── dataset.py                    # NEW / PLANNED
+│   ├── train.py                      # NEW / PLANNED
+│   ├── filter_policy.py              # NEW / PLANNED
+│   ├── evaluate.py                   # NEW / PLANNED
+│   └── artifacts/                    # local model files; normally ignored by Git
+│
+├── data/                             # P1 generates; P3 prepares
+│   ├── README.md
+│   ├── generated/                    # local synthetic traces; ignored by Git
+│   └── processed/                    # local feature/label tables; ignored by Git
+│
+├── interaction/                      # P4: target intent and safety
+│   ├── __init__.py
+│   ├── target_analyzer.py
+│   ├── intent_controller.py
+│   ├── assistance.py
+│   └── interaction_safety.py
+│
+├── visualization/                    # P4: visualization and diagnostics
+│   ├── __init__.py
+│   ├── cursor_canvas.py
+│   ├── diagnostics.py
+│   └── dashboard.py
+│
+├── evaluation/                       # P4: whole-system benchmarks
+│   ├── __init__.py
+│   ├── benchmark.py
+│   ├── metrics.py
+│   └── results/                      # generated results; avoid private data
+│
+├── shared/                           # ALL: shared interfaces and mocks
+│   ├── __init__.py
+│   ├── contracts.py
+│   └── mocks.py
+│
+└── tests/                            # ALL: module and integration tests
+    ├── __init__.py
+    ├── test_input.py
+    ├── test_scenarios.py             # NEW / PLANNED
+    ├── test_dsp.py
+    ├── test_ml.py                    # NEW / PLANNED
+    ├── test_intent.py
+    └── test_integration.py
+```
+
+**Sandbox ownership boundary:** Person 1 develops `targets.py` and `tasks.py` (what targets/scenarios exist); Person 4 develops `scene.py` (how those targets/scenarios are drawn and orchestrated). Person 1 should not duplicate the Pygame renderer or app event loop.
+
+## 7. Shared interfaces and contracts
+
+The current `shared/contracts.py` defines `InputSample`, `MotionFeatures`, `FilterOutput`, `Target`, and `IntentDecision`. All team members should use these shared data structures instead of creating incompatible versions. Extend them only after team agreement.
+
+### Core existing contracts
 
 ```python
 from dataclasses import dataclass
 from typing import Literal, Optional
 
-
 @dataclass
 class InputSample:
     timestamp: float                  # monotonic seconds
-    x: float                           # screen pixels
-    y: float                           # screen pixels
+    x: float                          # screen pixels
+    y: float                          # screen pixels
     source: Literal["synthetic", "mouse", "hardware"]
     accel_x: Optional[float] = None
     accel_y: Optional[float] = None
 
-
 @dataclass
 class MotionFeatures:
-    oscillation_score: float           # normalized 0.0–1.0
+    oscillation_score: float          # normalized 0.0–1.0
     dominant_frequency: Optional[float]
-    periodicity_confidence: float      # normalized 0.0–1.0
-    directional_consistency: float    # normalized 0.0–1.0
-    velocity: float                    # pixels per second
-
+    periodicity_confidence: float     # normalized 0.0–1.0
+    directional_consistency: float   # normalized 0.0–1.0
+    velocity: float                   # pixels per second
 
 @dataclass
 class FilterOutput:
@@ -240,7 +448,6 @@ class FilterOutput:
     y: float
     alpha: Optional[float] = None
     mode: Literal["raw", "fixed", "adaptive"] = "adaptive"
-
 
 @dataclass
 class Target:
@@ -250,289 +457,311 @@ class Target:
     width: float
     height: float
 
-
 @dataclass
 class IntentDecision:
     state: Literal[
-        "stable",
-        "oscillation_detected",
-        "target_confident",
-        "target_ambiguous",
-        "override",
+        "stable", "oscillation_detected", "target_confident",
+        "target_ambiguous", "override"
     ]
     target_id: Optional[str]
-    confidence: float                  # normalized 0.0–1.0
-    assist_dx: float                   # bounded offset in pixels
-    assist_dy: float                   # bounded offset in pixels
+    confidence: float                 # normalized 0.0–1.0
+    assist_dx: float                  # bounded pixels
+    assist_dy: float                  # bounded pixels
 ```
+
+### Additional interfaces to agree before implementation
+
+**P1 → P2/P4: input and scenario handoff**
+
+- `InputSample`: timestamp, X/Y, source, optional sensor values.
+- Scenario metadata: movement type, target layout, disturbance settings, sample rate, generation seed, and ground-truth reference.
+- `Target` objects with stable IDs and geometry.
+
+**P2 → P3: feature handoff**
+
+- A named/documented feature vector.
+- Feature names, units, window length, normalization, ordering, and timestamp assumptions.
+- Explicit handling of missing/invalid values.
+
+**P3 → P2/P4: ML policy handoff**
+
+```python
+alpha_target = filter_policy.predict_alpha(motion_features)
+filtered = adaptive_filter.update(sample, alpha_target=alpha_target)
+```
+
+This is a proposed interface; the current adaptive filter still calculates alpha internally from `MotionFeatures`. Refactoring it to accept a model-provided target alpha is a planned integration task. The policy should expose whether the selected source is `ml` or `heuristic_fallback`.
 
 ### Contract rules
 
 1. Coordinates are screen pixels.
-2. Timestamps are monotonic seconds.
-3. Normalized scores/confidence use the range `0.0–1.0`.
-4. Missing optional sensor values must be `None`, not invented readings.
-5. Each module must return the agreed structure, including field names and types.
-6. Any contract change must be announced and approved by the whole team before editing `shared/contracts.py`.
-7. Do not use `InputSample.timestamp` as a frame number. Use elapsed time when calculating velocity and derivatives.
-8. Keep processing time and end-to-end cursor latency as separate metrics.
+2. Timestamps are monotonic seconds, not frame numbers.
+3. Preserve real sample intervals. Do not assume mouse/ESP32 samples arrive at exactly 120 Hz.
+4. Normalized scores use 0.0–1.0 and must document their calculation.
+5. Missing sensor values are `None`, not fabricated readings.
+6. Training and runtime feature order and preprocessing must match exactly.
+7. Filter state persists across samples and is reset between independent trials.
+8. Keep processing time separate from end-to-end latency.
+9. Announce and review changes to shared contracts before merging.
+10. Every module must run with mock inputs before integration.
 
-### Mocks
+## 8. Integration strategy
 
-Create `shared/mocks.py` containing:
+Keep a working end-to-end application throughout development. Integrate modules one at a time.
 
-- A sample input sequence.
-- A sample `MotionFeatures` instance.
-- Fixed and adaptive `FilterOutput` examples.
-- One clear-target `IntentDecision`.
-- One ambiguous-target `IntentDecision`.
+1. **Runnable shell:** Person 4 launches the Pygame app with mocks and a basic scene.
+2. **Scenario source:** connect Person 1's synthetic generator, target layouts, and task scenarios.
+3. **DSP baseline:** connect Person 2's feature extraction, fixed filter, and heuristic adaptive filter.
+4. **ML policy:** connect Person 3's model behind `predict_alpha`; retain the heuristic fallback.
+5. **Intent and safety:** connect target ranking, confidence, ambiguity abstention, bounded assistance, and override.
+6. **Hardware:** connect the ESP32 source only after the synthetic pipeline is stable.
+7. **Evaluation:** run identical scenarios in all comparison modes and record results.
+8. **Feature freeze:** stop adding features; fix bugs, validate measurements, and rehearse.
 
-Person 4 uses these mocks to build the full application first. Persons 2 and 3 use them to test their modules independently.
+After each integration, run module tests and integration tests. If a module is late or breaks the app, keep its mock/fallback in place while its owner fixes it.
 
-**Golden rule:** Every module must work with mock data before integration with another person's real implementation.
+## 9. Twenty-four-hour execution plan
 
----
-
-## 4. Repository structure
-
-```text
-intentglide/
-├── README.md
-├── requirements.txt
-├── sandbox/                     # Person 4: interactive test environment
-│   ├── scene.py                 # Main test area / drawing surface
-│   ├── targets.py               # Target positions, sizes and layouts
-│   └── tasks.py                 # Target-selection and drawing scenarios
-├── app/                         # Person 4: application and integration
-│   ├── main.py
-│   └── orchestrator.py
-├── input/                       # Person 1
-│   ├── input_provider.py
-│   └── synthetic_generator.py
-├── hardware/                    # Person 1
-│   └── esp32_controller.ino
-├── dsp/                         # Person 2
-│   ├── motion_analyzer.py
-│   ├── fixed_filter.py
-│   └── adaptive_filter.py
-├── interaction/                 # Person 3
-│   ├── target_analyzer.py
-│   ├── intent_controller.py
-│   ├── assistance.py
-│   └── interaction_safety.py
-├── visualization/                # Person 4
-│   ├── cursor_canvas.py
-│   ├── diagnostics.py
-│   └── dashboard.py
-├── evaluation/                  # Person 4
-│   ├── benchmark.py
-│   └── metrics.py
-├── shared/                      # Shared — coordinate changes
-│   ├── contracts.py
-│   └── mocks.py
-└── tests/
-    ├── test_input.py
-    ├── test_dsp.py
-    ├── test_intent.py
-    └── test_integration.py
-```
-
----
-
-## 5. Integration strategy
-
-### Build the mocked application first
-
-Before real modules are ready, Person 4 should have a complete application that can:
-
-- Generate or load a mock input trajectory.
-- Display raw and filtered paths.
-- Switch between raw, fixed, adaptive, and full-system modes.
-- Show mock motion features and controller state.
-- Demonstrate both target assistance and ambiguous-target abstention.
-
-This proves that the application flow and UI work before the algorithmic modules are integrated.
-
-### Replace mocks one at a time
-
-1. Launch the sandbox with its built-in target layouts and task scenarios.
-2. Connect Person 1's synthetic generator to the sandbox and verify the input contract.
-3. Replace mock DSP with Person 2's analyzer and filters; verify fixed and adaptive outputs.
-4. Replace mock intent logic with Person 3's controller and safety layer.
-5. Connect hardware as an optional source only after the synthetic path works.
-6. Run integration tests after each replacement.
-
-Do not replace all mocks simultaneously. It makes interface bugs harder to isolate.
-
----
-
-## 6. 24-hour execution timeline
-
-| Time | Person 1 — Input/Hardware | Person 2 — DSP | Person 3 — Intent/Safety | Person 4 — App/Integration |
+| Time | Person 1 — Input / Hardware / Scenarios | Person 2 — DSP / Features | Person 3 — ML | Person 4 — App / Integration |
 |---|---|---|---|---|
-| **0–1 hr** | Agree input contract | Agree DSP contract | Agree intent contract | Create repo, contracts, mocks, and running mock app |
-| **1–4 hrs** | Synthetic generator + mouse input | Fixed filter + motion features | Target scoring + state logic | Pygame shell + mock pipeline |
-| **4–7 hrs** | ESP32 + vibration rig | Adaptive smoothing | Guidance + abstention | Cursor visualization + mode selector |
-| **7–10 hrs** | Test input/timestamps | Test filter behavior | Test safety/edge cases | Integrate first real modules |
-| **10–12 hrs** | Input handoff | DSP handoff | Intent handoff | Complete core integration |
-| **12–15 hrs** | Hardware integration | Tune filter parameters | Tune target confidence | Full end-to-end testing |
-| **15–18 hrs** | Hardware reliability | Signal diagnostics | Click safety + override | Benchmark dashboard |
-| **18–20 hrs** | Bug fixes | Bug fixes | Bug fixes | Feature freeze + regression tests |
-| **20–22 hrs** | Demo support | Performance measurements | Demo scenarios | Presentation and recording |
-| **22–24 hrs** | Final tests | Final tests | Final tests | Submission and pitch rehearsal |
+| 0–1 h | Agree input and scenario contracts | Agree feature definitions | Agree ML feature and label schema | Contracts, mocks, runnable app shell |
+| 1–4 h | Synthetic generator, disturbance profiles, target layouts | FFT analysis and fixed filter baseline | Dataset and label-generation design | Pygame scene and mock pipeline |
+| 4–7 h | Task scenarios, ground truth, mouse adapter | Adaptive filter and feature extraction | Implement alpha-label generation | Orchestrator and UI mode selection |
+| 7–10 h | Optional ESP32 rig; provide sample data | Verify features and filter state | Train first Random Forest | Integrate input and DSP |
+| 10–12 h | Input and scenario handoff | Feature/DSP handoff | Model inference handoff or fallback | Connect ML policy and interaction |
+| 12–15 h | Test disturbances and scenarios | Tune/validate filter behaviour | Evaluate held-out scenarios | Complete end-to-end pipeline |
+| 15–18 h | Hardware reliability and edge cases | Signal diagnostics and latency | Compare ML vs rule-based policy | Benchmark dashboard and demo flow |
+| 18–20 h | Bug fixes | Bug fixes | Bug fixes / model freeze | Feature freeze and regression tests |
+| 20–22 h | Demo support | Performance measurements | Final model measurements | Presentation and recording |
+| 22–24 h | Final tests | Final tests | Final tests | Submission and pitch rehearsal |
 
-The schedule is a guide, not a reason to delay integration. If a module is late, keep its mock in place while the rest of the system continues to work.
+### Parallel-work rule
 
----
+- P1 can generate samples, targets, and tasks without waiting for DSP or the application.
+- P2 can test features and filters using synthetic traces and mocks.
+- P3 can build dataset and training code against a frozen feature schema before final DSP integration.
+- P4 can build the application around mock input, features, filter outputs, and intent decisions.
 
-## 7. Integration checkpoints
+## 10. Git workflow and collaboration rules
 
-- [ ] **Hour 1 — Contract freeze:** All members agree on `shared/contracts.py`. Person 4 has a runnable mock application.
-- [ ] **Hour 4 — Independent outputs:** Person 1 produces synthetic input; Person 2 produces fixed-filter output; Person 3 produces a decision from mock data; Person 4 displays a basic cursor canvas.
-- [ ] **Hour 7 — First integration:** Real input connects to the real DSP engine. Verify timestamps, coordinates, and filter state.
-- [ ] **Hour 10–12 — Full pipeline:** Replace mocks one by one and test after each replacement.
-- [ ] **Hour 15 — End-to-end candidate:** Complete synthetic-input demonstration works without hardware.
-- [ ] **Hour 18 — Feature freeze:** No new features. Only bug fixes, usability polish, metric verification, and rehearsal.
-- [ ] **Hour 20 — Demo locked:** Final demo scenario and backup recording are ready.
-
----
-
-## 8. Git workflow and collaboration rules
-
-Use one branch per person:
+Suggested branches:
 
 ```text
 main
-├── person1/input-hardware
-├── person2/dsp-engine
-├── person3/intent-controller
+├── person1/input-hardware-sandbox
+├── person2/dsp-feature-engineering
+├── person3/ml-filter-policy
 └── person4/app-integration
 ```
 
-Suggested workflow:
+Example:
 
 ```bash
-git checkout -b person1/input-hardware
-# Make a small, focused change
-git add .
-git commit -m "Add synthetic input generator"
-git push -u origin person1/input-hardware
+git checkout main
+git pull origin main
+git checkout -b person1/input-hardware-sandbox
+
+# Make a focused change in owned files
+git add input/ hardware/ sandbox/targets.py sandbox/tasks.py
+git commit -m "Add input and sandbox scenario support"
+git push -u origin person1/input-hardware-sandbox
 ```
 
 Team rules:
 
-- Work primarily inside your assigned folders.
-- Commit and push at least once an hour.
-- Merge small, working changes frequently.
 - Keep `main` runnable.
-- Do not silently modify shared data contracts.
-- Person 4 reviews integration and runs the application after merges.
-- Run the relevant module test and integration test after each merge.
-- Keep hardware-specific code isolated so the synthetic pipeline remains available as a fallback.
+- Work primarily within assigned folders.
+- Push small, reviewable commits regularly and open pull requests.
+- Agree on shared contracts before dependent modules are integrated.
+- Do not commit secrets, `.env` files, local environments, caches, or large generated datasets.
+- Do not commit unvalidated trained model binaries by default. Track model version, training configuration, and metrics; use an agreed artifact-sharing method when needed.
+- Keep dataset generation reproducible through scripts, configuration, and seeds.
+- Coordinate changes to another person's owned files before editing.
+- Person 4 integrates changes incrementally and runs regression tests after merges.
+- A delayed module remains behind a mock or fallback; it must not block the rest of the application.
 
----
+## 11. Demonstration plan
 
-## 9. Primary demo scenario
+The demo should prove that IntentGlide balances stability and responsiveness, not merely that it makes a cursor smoother.
 
-**Scenario:** Select a small target under a controlled oscillatory disturbance.
+### Scenario A — Controlled oscillatory disturbance
 
-1. Person 4 launches the sandbox with a target-selection or drawing task.
-2. The sandbox exposes target positions, sizes, and task state to the application.
-3. Person 1's synthetic generator creates a known intended cursor path with an imposed 8 Hz disturbance and emits timestamped samples.
-4. Person 2's DSP module estimates motion features and generates fixed and adaptive outputs.
-5. Person 3's intent controller evaluates the candidate target using the sandbox target geometry.
-6. If intent confidence is high, the system applies bounded guidance.
-7. If two nearby targets become similarly plausible, the system abstains from guidance.
-8. Person 4's application displays raw, fixed-filter, adaptive, and full-system paths inside the sandbox.
-9. The benchmark logger records task outcomes and processing diagnostics.
+1. Launch the sandbox with a standard target layout.
+2. Generate a known intended path with a controlled disturbance, for example 8 Hz.
+3. Display raw movement.
+4. Compare fixed Butterworth, heuristic adaptive, and ML-adaptive outputs.
+5. Display estimated features, selected alpha, active policy source, and processing time.
+6. Compare trajectory error and residual oscillation with the known intended path.
 
-### Hardware demonstration
+### Scenario B — Intentional rapid movement
 
-Repeat the scenario with the motor switched on, if the physical rig is reliable. The hardware is an additional input source, not a dependency for the core application.
+1. Generate a deliberate fast movement with little/no imposed disturbance.
+2. Check whether the ML policy preserves responsiveness rather than unnecessarily smoothing the movement.
+3. Compare completion time and tracking error against baselines.
 
-### Guaranteed fallback
+### Scenario C — Ambiguous targets
 
-The synthetic scenario must demonstrate the complete software pipeline if the physical motor rig fails during the presentation. The sandbox itself must still run: it supplies the targets and tasks, while the synthetic generator supplies repeatable disturbed cursor input.
+1. Switch to a layout with two or more closely spaced targets.
+2. Move the cursor so that competing target scores are similar.
+3. Show that the intent controller abstains from directional guidance.
+4. Demonstrate immediate manual override.
 
----
+### Optional hardware demonstration
 
-## 10. Evaluation metrics
+Repeat a controlled scenario with the ESP32 vibration rig if it is reliable. Hardware is an optional input source, not a core software dependency. Never drive an ERM motor directly from a microcontroller GPIO; use a suitable motor driver and power supply.
 
-Compare four modes under the same intended paths, disturbance settings, and target layouts:
+### Fallback demonstration
 
-- **A — Raw:** No filtering or target guidance.
-- **B — Fixed:** Butterworth low-pass filter.
-- **C — Adaptive:** Adaptive filter without target guidance.
-- **D — Full system:** Adaptive filtering plus confidence-gated target assistance and safety.
+The synthetic scenario must demonstrate the full available software pipeline without physical hardware. If the ML model is not ready, show the rule-based fallback and label it clearly. Do not imply that the ML stage is active when it is not.
 
-Record:
+## 12. Evaluation plan
+
+Compare these modes using identical intended paths, disturbance settings, target layouts, and trial conditions:
+
+| Mode | Description | Status |
+|---|---|---|
+| A — Raw | No filtering or target guidance | Existing |
+| B — Fixed | Butterworth low-pass filter | Existing |
+| C — Rule-based adaptive | Current adaptive exponential filter | Existing |
+| D — ML adaptive | ML-predicted alpha + adaptive exponential filter | Planned |
+| E — Full system | ML adaptive filtering + confidence-aware assistance and safety | Planned |
+
+### Metrics
 
 | Metric | What it measures |
 |---|---|
-| Target acquisition success | Whether the intended target is successfully acquired |
+| Trajectory RMSE | Difference between output and known intended path |
+| Residual high-frequency power | Remaining energy in the imposed oscillation band |
+| Jitter reduction | Reduction in unwanted high-frequency movement |
+| Lag / response delay | Tracking delay or loss introduced by filtering |
+| Target acquisition success | Whether the intended target is reached |
 | Wrong-target activations | Incorrect target selections |
-| Trajectory error | Deviation from known intended paths in synthetic tests |
-| Median task completion time | Interaction speed |
-| High-frequency attenuation | Suppression of the imposed oscillatory component |
-| Processing time per update | Computation time for the software pipeline |
-| End-to-end latency | Delay from input event to displayed cursor response |
+| Task completion time | Time required to complete the task |
 | False assistance rate | Cases where guidance activates unnecessarily |
-| Abstention count | Cases where guidance is withheld due to ambiguity |
+| Abstention behaviour | Whether ambiguous cases receive no directional assistance |
+| Processing time | Feature extraction, inference, filtering, and interaction computation time |
+| End-to-end latency | Delay from input event to displayed cursor response |
+| Alpha prediction error | Difference between predicted alpha and offline optimal-alpha label |
 
-Use synthetic trajectories with known ground truth and controlled physical disturbances where possible. Label simulated examples clearly. Do not invent results or present simulated data as measured performance.
+Report median and spread as well as averages where appropriate. Use repeated trials and held-out trajectories. Keep synthetic, hardware-generated, and real-user data results separate. Do not invent or overstate results.
 
----
+### ML-specific evaluation
 
-## 11. Priority order if time runs short
+- Compare the Random Forest policy against the existing formula-based adaptive alpha policy.
+- Use held-out complete trajectories/scenarios, not random adjacent overlapping windows.
+- Report deliberate rapid movement and oscillatory movement separately.
+- Test multiple frequencies, amplitudes, directions, speeds, and trajectory shapes.
+- Record the chosen loss function and its weights.
+- Measure inference latency on the actual development hardware.
+- Treat synthetic-only generalization as preliminary.
+
+## 13. Technology stack and setup
+
+| Area | Technology | Purpose | Status |
+|---|---|---|---|
+| Main application | Python | Input, orchestration, DSP, ML, evaluation | Existing |
+| Numerical computing | NumPy | Arrays, numerical operations, FFT | Existing |
+| Signal processing | SciPy | Butterworth filter design and filtering | Existing |
+| Interactive sandbox | Pygame | Cursor workspace, targets, diagnostics | Existing |
+| ML | scikit-learn | Random Forest regression and evaluation | Planned |
+| Model persistence | joblib | Saving/loading trained model | Planned |
+| Embedded hardware | ESP32 + Arduino C/C++ | Optional vibration-rig control | Starter firmware exists |
+| Testing | pytest | Unit and integration tests | Existing |
+| Collaboration | Git + GitHub | Branches, reviews, integration | Existing |
+
+Set up the environment:
+
+```bash
+python -m venv .venv
+
+# Windows PowerShell
+.venv\Scripts\Activate.ps1
+
+# macOS / Linux
+source .venv/bin/activate
+
+pip install -r requirements.txt
+```
+
+Run the current app and tests:
+
+```bash
+python -m app.main
+pytest -q
+```
+
+The ML training and inference commands will be documented once those modules are implemented. Do not assume `python -m ml.train` works before `ml/train.py` exists.
+
+## 14. Priority order
 
 | Priority | Feature |
 |---|---|
-| **P0 — Must work** | Input → DSP → cursor-output pipeline |
-| **P0 — Must work** | Fixed-filter and adaptive-filter comparison |
-| **P0 — Must work** | Intent decision and ambiguous-target abstention |
-| **P0 — Must work** | Integrated cursor visualization and manual override |
-| **P1 — Important** | ESP32 physical vibration rig |
-| **P1 — Important** | Benchmark metrics and dashboard |
-| **P1 — Important** | Optional click-safety behavior |
-| **P2 — Stretch** | Accelerometer integration |
-| **P2 — Stretch** | Advanced narrowband cancellation |
-| **P2 — Stretch** | Additional calibration and personalization features |
+| P0 — Must work | Synthetic input with known ground-truth trajectory |
+| P0 — Must work | Runnable Pygame sandbox and target/task scenarios |
+| P0 — Must work | Fixed and rule-based adaptive baselines |
+| P0 — Must work | Shared feature interface and repeatable evaluation |
+| P0 — Must work | Intent ambiguity abstention and manual override |
+| P1 — Important | Dataset generation and optimal-alpha labels |
+| P1 — Important | Random Forest training and inference |
+| P1 — Important | ML vs rule-based adaptive comparison |
+| P1 — Important | Benchmark dashboard and latency measurement |
+| P1 — Important | ESP32 physical disturbance rig |
+| P2 — Stretch | Accelerometer integration |
+| P2 — Stretch | 1D CNN / GRU temporal model |
+| P2 — Stretch | Per-user calibration and personalization |
+| P2 — Stretch | Frequency-selective or narrowband cancellation |
 
-Do not sacrifice the working software pipeline to finish optional hardware or stretch features.
+If time runs short, deliver a solid DSP baseline, controlled synthetic scenarios, and honest measurements before attempting a more complex model.
 
----
+## 15. Definition of done
 
-## 12. Definition of done
+### Core application
 
-The project is ready for demonstration when:
+- [ ] App launches with one command.
+- [ ] Synthetic input works without hardware.
+- [ ] Standard and ambiguous target layouts work.
+- [ ] Raw, fixed, and rule-based adaptive modes work.
+- [ ] Motion features and diagnostics are visible.
+- [ ] Manual override works immediately.
+- [ ] Ambiguous intent causes the controller to abstain.
+- [ ] Tests pass and the demo is repeatable.
 
-- [ ] The app launches with one command.
-- [ ] Synthetic input runs without physical hardware.
-- [ ] Raw, fixed, adaptive, and full-system modes all work.
-- [ ] The fixed and adaptive filters preserve state correctly across samples.
-- [ ] Motion diagnostics update from the selected input.
-- [ ] Clear targets can trigger bounded guidance when enabled.
-- [ ] Ambiguous targets cause the controller to abstain.
-- [ ] Manual override immediately disables assistance.
-- [ ] Raw and output trajectories are visible and distinguishable.
-- [ ] Benchmark metrics are recorded and simulated data is labelled.
-- [ ] The physical vibration rig is optional and has a synthetic fallback.
-- [ ] The team has rehearsed the same primary demo scenario.
+### ML extension
 
----
+- [ ] Feature schema is frozen and shared by training and inference.
+- [ ] Training data includes deliberate rapid movement as well as imposed oscillations.
+- [ ] Optimal-alpha labels use a documented tracking/jitter/lag objective.
+- [ ] Train/validation/test split is made by complete trajectories or scenarios.
+- [ ] Random Forest is trained and evaluated.
+- [ ] ML-adaptive mode is compared against the rule-based adaptive baseline.
+- [ ] Predicted alpha is finite, bounded, and rate-limited.
+- [ ] Missing or invalid model falls back safely.
+- [ ] Model and dataset versions are recorded.
 
-## 13. Final team principle
+### Hardware and evaluation
 
-**Every module works independently. Every module follows a shared contract. The complete application runs before the final six hours.**
+- [ ] ESP32 rig is optional and electrically safe.
+- [ ] Synthetic and physical data are identified separately.
+- [ ] Processing time and end-to-end latency are measured separately.
+- [ ] No simulated result is presented as a real-user result.
+- [ ] Final demo and fallback recording are ready.
 
-Person 4 is responsible for maintaining the integration path from hour one. The other three members should be able to hand over their modules without requiring the application to be rewritten.
+## 16. Technical and safety notes
 
-The final hours should be spent validating the behavior, fixing edge cases, preparing the presentation, and rehearsing—not connecting four disconnected pieces of software for the first time.
+IntentGlide is an engineering prototype, not a medical diagnostic device or a clinically validated intervention. It must not diagnose Parkinson's disease or infer a user's medical condition from cursor movement.
 
----
+The synthetic generator and ERM vibration rig create controlled disturbances for engineering evaluation. They do not reproduce the full physiology, variability, or lived experience of a tremor condition.
 
-## 14. Technical and safety note
+Assistance should remain visible, bounded, reversible, and user-controlled. When intent is uncertain, the system should abstain rather than guess. Filtering should not prevent intentional rapid movement or user override. Future real-user data collection must be consented, privacy-aware, and reviewed under relevant institutional requirements.
 
-IntentGlide is an engineering prototype, not a medical diagnostic device or a clinically validated intervention. The vibration rig generates a controlled tremor-like disturbance; it is not a clinically accurate simulation of Parkinson's disease or any other condition. Motion features such as oscillation energy, periodicity, and jerk are engineering signals and must not be described as proof that a user is struggling or experiencing a particular medical condition.
+## 17. Final team principle
 
-Assistance should remain visible, bounded, reversible, and user-controlled. When target intent is ambiguous, the system should abstain rather than guess.
+**Every module works independently. Every module follows a shared contract. The complete application remains runnable throughout development.**
+
+- **Person 1:** input generation, hardware, target geometry, and task scenarios.
+- **Person 2:** DSP and feature engineering.
+- **Person 3:** ML dataset preparation, training, and filter-policy inference.
+- **Person 4:** Pygame rendering, intent/safety integration, orchestration, and end-to-end evaluation.
+- **Everyone:** shared contracts, tests, documentation, and demo readiness.
+
+The strongest result is not the most complicated model. It is a measured, explainable system that reduces unwanted motion without sacrificing the user's intentional control.
