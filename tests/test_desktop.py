@@ -58,3 +58,16 @@ def test_taskbar_button_raises_window():
     d.open_window("settings")
     d.click(*d.task_buttons[0].center)   # notepad's taskbar button
     assert d.windows[-1].id == "notepad"
+
+
+def test_scattered_icons_are_unaligned_clickable_targets():
+    d = Desktop()
+    extra = d.icons[4:]
+    assert [i.id for i in extra] == ["icon:files", "icon:browser", "icon:photos"]
+    for a in extra:
+        for b in extra:
+            if a is not b:
+                assert abs(a.x - b.x) >= 40 and abs(a.y - b.y) >= 40
+    assert d.click(*extra[1].center) == "icon:browser"
+    assert d.windows[-1].id == "browser"
+    assert Desktop(icon_seed=7).icons[3].x == Desktop(icon_seed=7).icons[3].x   # same seed, same layout

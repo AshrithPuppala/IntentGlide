@@ -15,31 +15,45 @@ from typing import Optional
 
 import pygame
 
+from sandbox.benchmark_window import attach_benchmark
 from sandbox.calculator import attach_calculator
+from sandbox.models import BenchmarkModel, SettingsModel
+from sandbox.scatter import scatter_icon_positions
+from sandbox.settings_window import attach_settings
 from sandbox.widgets import Widget, Window
 from shared.contracts import Target
 from visualization import theme
 from visualization.cursor_canvas import draw_polyline
 from visualization.icons import draw_app_icon, draw_start_glyph
+from visualization.trial_hud import hud_rect
 
 WINDOW_SPECS = {
     "notepad": ("Notepad", 460, 320, ["Untitled - Notepad", "",
                                       "Try the X button or the taskbar", "with the tremor switched on."]),
     "calculator": ("Calculator", 300, 380, []),
-    "settings": ("Settings", 460, 320, ["Mode, tremor and assistance controls", "will live here."]),
+    "settings": ("Settings", 500, 372, []),                  # drawn by sandbox.settings_window
+    "benchmark": ("Benchmark", 660, 470, []),                # drawn by sandbox.benchmark_window
+    "files": ("Files", 420, 300, ["Documents", "Downloads", "Pictures"]),
+    "browser": ("Browser", 480, 320, ["Demo window - nothing loads here.", "Use it as one more click target."]),
+    "photos": ("Photos", 420, 300, ["No photos yet.", "Demo window."]),
 }
-ICON_ORDER = [("notepad", "Notepad"), ("calculator", "Calculator"), ("settings", "Settings")]
+ICON_ORDER = [("notepad", "Notepad"), ("calculator", "Calculator"), ("settings", "Settings"),
+              ("benchmark", "Benchmark")]
+# Extra demo icons, placed at random (unaligned) positions. They are not in the Start menu.
+SCATTER_ICONS = [("files", "Files"), ("browser", "Browser"), ("photos", "Photos")]
 
 
 class Desktop:
     TASKBAR_H = 48
     TILE = 64
 
-    def __init__(self, width: int = 820, height: int = 700):
+    def __init__(self, width: int = 820, height: int = 700, icon_seed: Optional[int] = 7):
         self.width, self.height = width, height
         self.windows: list[Window] = []           # z-order, last = topmost
         self._taskbar_order: list[str] = []       # order windows were opened
         self.menu_open = False
+        self.settings = SettingsModel()           # edited by the Settings window
+        self.benchmark = BenchmarkModel()         # shown by the Benchmark window
         self.raw_trail: list[tuple[float, float]] = []
         self.output_trail: list[tuple[float, float]] = []
         self.last_clicked: Optional[str] = None
@@ -52,6 +66,7 @@ class Desktop:
                    on_click=lambda k=key: self.open_window(k))
             for i, (key, name) in enumerate(ICON_ORDER)
         ]
+        self.icons += self._scattered_icons(icon_seed)      # appended, so icons[0:3] stay the originals
         self.start_btn = Widget("taskbar:start", 0, 0, 44, 36, on_click=self.toggle_start)
         self.show_desktop_btn = Widget("taskbar:desktop", width - 14, height - self.TASKBAR_H, 14,
                                        self.TASKBAR_H, "", on_click=self.close_all)
@@ -59,6 +74,21 @@ class Desktop:
         self.menu_items: list[Widget] = []
         self.menu_rect = pygame.Rect(0, 0, 0, 0)
         self._layout_taskbar()
+
+    def _scattered_icons(self, seed: Optional[int]) -> list[Widget]:
+        """Create the extra icons at random positions, kept clear of everything that must stay reachable."""
+        w, h = 84, 100
+        _, cw, ch, _ = WINDOW_SPECS["calculator"]
+        avoid = [
+            (0, 0, 120, self.height),                              # the original icon column
+            (0, self.height - self.TASKBAR_H - 8, self.width, self.TASKBAR_H + 8),   # taskbar
+            tuple(hud_rect(self.width)),                           # trial HUD, top right
+            (160, 40, cw, ch),                                     # where the calculator opens
+        ]
+        area = (124, 16, self.width - 124 - 12, self.height - self.TASKBAR_H - 16 - 12)
+        spots = scatter_icon_positions(len(SCATTER_ICONS), area, (w, h), avoid, seed=seed)
+        return [Widget(f"icon:{key}", x, y, w, h, name, on_click=lambda k=key: self.open_window(k))
+                for (key, name), (x, y) in zip(SCATTER_ICONS, spots)]
 
     # ---- windows -----------------------------------------------------
     def open_window(self, key: str):
@@ -69,10 +99,16 @@ class Desktop:
                 return
         title, w, h, lines = WINDOW_SPECS[key]
         n = len(self.windows)
-        win = Window(key, title, 160 + 34 * n, 40 + 34 * n, w, h,
+        x = max(0, min(160 + 34 * n, self.width - w - 6))        # keep big windows on screen
+        y = max(0, min(40 + 34 * n, self.height - self.TASKBAR_H - h - 6))
+        win = Window(key, title, x, y, w, h,
                      on_close=lambda k=key: self.close_window(k), body_lines=lines)
         if key == "calculator":
             attach_calculator(win)               # keypad = 20 closely spaced targets
+        elif key == "settings":
+            attach_settings(win, self.settings)
+        elif key == "benchmark":
+            attach_benchmark(win, self.benchmark)
         self.windows.append(win)
         self._taskbar_order.append(key)
         self._layout_taskbar()
@@ -106,7 +142,7 @@ class Desktop:
         left = (self.width - total) / 2
         top = self.height - self.TASKBAR_H + 6
         self.start_btn.x, self.start_btn.y = left, top
-        titles = dict(ICON_ORDER)
+        titles = {**dict(ICON_ORDER), **dict(SCATTER_ICONS)}
         self.task_buttons = [
             Widget(f"taskbar:win:{key}", left + 50 + i * 126, top, 120, 36, titles[key],
                    on_click=lambda k=key: self.raise_window(k))
