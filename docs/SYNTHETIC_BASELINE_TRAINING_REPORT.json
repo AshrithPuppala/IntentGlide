@@ -1,0 +1,59 @@
+{
+  "dataset": "data/processed/training_dataset.csv",
+  "rows": 3148,
+  "unique_trials": 400,
+  "split_rows": {
+    "train": 2016,
+    "validation": 508,
+    "test": 624
+  },
+  "split_trials": {
+    "train": 256,
+    "validation": 64,
+    "test": 80
+  },
+  "features": [
+    "oscillation_score",
+    "dominant_frequency",
+    "periodicity_confidence",
+    "velocity_mean",
+    "velocity_std",
+    "acceleration_rms",
+    "jerk_rms",
+    "directional_consistency",
+    "x_band_power",
+    "y_band_power",
+    "band_power_ratio",
+    "oscillation_amplitude",
+    "spectral_entropy"
+  ],
+  "target": "alpha_optimal",
+  "models": {
+    "random_forest": {
+      "validation": {
+        "mae": 0.05376485032095993,
+        "rmse": 0.07724823034840604,
+        "r2": 0.7207919445500873
+      },
+      "test": {
+        "mae": 0.058589008226960324,
+        "rmse": 0.08326722454766272,
+        "r2": 0.5741895363684437
+      }
+    },
+    "xgboost": {
+      "validation": {
+        "mae": 0.055948715282550326,
+        "rmse": 0.08298526027082424,
+        "r2": 0.6777797823873632
+      },
+      "test": {
+        "mae": 0.06133174658738649,
+        "rmse": 0.08733861516008475,
+        "r2": 0.5315311115559058
+      }
+    }
+  },
+  "xgboost_available": true,
+  "warning": "Synthetic-only development metrics. Do not claim real-user or clinical performance."
+}

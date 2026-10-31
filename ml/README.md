@@ -1,48 +1,75 @@
-# ML Filter Controller — Development Notes
+# Person 3 — ML Filter Controller
 
-**Status: planned.** The current repository does not yet contain a trained model or runtime ML inference. Keep the heuristic adaptive filter as the working baseline until this module is implemented and evaluated.
+**Status:** First synthetic development pipeline is implemented in this starter bundle. It is not yet integrated with Person 2's final feature extractor or the Pygame app.
 
-## Objective
+## Run locally from the IntentGlide repository root
 
-Train a lightweight regression model to predict a suitable target smoothing parameter (`alpha_target`) from causal cursor-motion features. The model recommends the filter parameter; DSP applies it. It is not a medical classifier or a future-tremor predictor.
+Install the project's dependencies plus XGBoost:
 
-## Initial model
-
-Use `sklearn.ensemble.RandomForestRegressor`. Freeze the feature order, units, window length, preprocessing, random seed and model hyperparameters for each experiment. Consider temporal CNN/GRU models only after evaluating the engineered-feature baseline.
-
-## Pipeline
-
-1. Read synthetic traces with timestamps, observed X/Y and known intended X/Y.
-2. Build causal features from the current/past movement window using the P2 feature schema.
-3. Offline, evaluate candidate alpha values with the same stateful smoother over a defined subsequent evaluation horizon.
-4. Calculate a documented cost such as `w_track * tracking_error + w_jitter * residual_jitter + w_lag * lag_penalty`.
-5. Select the alpha with the lowest objective as that window's regression target.
-6. Do not put future samples from the label horizon into the model input features.
-7. Split by complete trajectory/scenario/seed, not individual overlapping windows.
-8. Train on train data, select on validation data, and evaluate once on a held-out test set.
-9. Save the model and feature metadata with joblib.
-10. Validate inference, clamp alpha, rate-limit changes, and fall back to the heuristic policy if the model is unavailable or invalid.
-
-## Runtime interface (planned)
-
-```python
-alpha_target = filter_policy.predict_alpha(motion_features)
-filtered = adaptive_filter.update(sample, alpha_target=alpha_target)
+```cmd
+pip install -r requirements-ml.txt
 ```
 
-The policy should expose whether the active source is `ml` or `heuristic_fallback`. Do not report model confidence unless an uncertainty estimate has been designed and calibrated.
+Generate controlled trajectories using Person-1-style labels:
 
-## Suggested files
+```cmd
+python -m ml.synthetic_data --trials 400 --sample-rate 120 --duration 3.5 --seed 42
+```
 
-- `dataset.py`: trace/window assembly, optimal-alpha labels and grouped splitting.
-- `train.py`: model fitting, validation metrics and joblib export.
-- `filter_policy.py`: model loading, inference validation, alpha bounds and fallback.
-- `evaluate.py`: held-out comparisons against fixed and heuristic baselines.
+Align input and label rows, extract causal observed-motion features, and label each window with its offline best alpha:
 
-## Evaluation
+```cmd
+python -m ml.dataset --inputs data/generated/synthetic_input.csv --labels data/generated/synthetic_labels.csv
+```
 
-Compare raw, fixed Butterworth, heuristic adaptive and ML adaptive modes on identical held-out paths. Report tracking error, residual jitter, lag, task outcomes and inference time. Include intentional fast movement and trajectory changes.
+Train both regressors using trial-grouped train/validation/test splits:
 
-## Artifact policy
+```cmd
+python -m ml.train --dataset data/processed/training_dataset.csv
+```
 
-Keep generated datasets and trained models out of Git by default. Do not commit private recordings or unvalidated `.joblib` files. Store reproducible scripts, configuration, feature metadata and metrics instead.
+Re-evaluate saved models on the same held-out trial split:
+
+```cmd
+python -m ml.evaluate --dataset data/processed/training_dataset.csv
+```
+
+Run tests:
+
+```cmd
+python -m pytest -q tests/test_ml.py
+```
+
+## Files
+
+- `synthetic_data.py`: creates observed X/Y plus Person-1-style label CSVs.
+- `features.py`: prototype window-level feature extraction from observed X/Y only.
+- `labeling.py`: offline candidate-alpha replay and objective calculation.
+- `dataset.py`: timestamp/trial alignment and feature/alpha table creation.
+- `train.py`: grouped-split Random Forest and XGBoost training.
+- `filter_policy.py`: inference wrapper with alpha bounds, rate limiting and heuristic fallback.
+- `evaluate.py`: held-out regression metric re-evaluation.
+- `dataset_sources.md`: how public datasets should and should not be used.
+
+## Current prototype settings
+
+- Synthetic input sample rate: 120 Hz.
+- Feature window: 128 samples (~1.07 s).
+- Label horizon: 64 future samples (~0.53 s).
+- Window stride: 32 samples.
+- Alpha candidates: 16 values from 0.12 to 0.85.
+- Label objective: tracking RMSE + 0.50 × residual 4–12 Hz error RMS + 0.50 × estimated lag displacement in pixels.
+- Model inputs: 13 prototype features generated from observed cursor X/Y only.
+- Ground-truth fields (`truth_x`, `truth_y`), disturbance parameters and task labels are not model inputs.
+- Override horizons are excluded from alpha regression.
+
+These values are initial experimental choices. Agree feature definitions and sampling behaviour with Person 2 before integration. Confirm with Person 1 that `tremor_freq` is in Hz and `tremor_amp` is in pixels before applying this generator's units to real scenario files.
+
+## Important limitations
+
+1. Synthetic data is an engineering testbed, not clinically representative tremor data.
+2. The alpha label is optimal only for the stated cost function, window, horizon, candidate grid and filter initialization.
+3. A low alpha prediction error does not prove lower cursor error. Evaluate filtered trajectories and task outcomes too.
+4. Public datasets without intended-path ground truth cannot directly produce supervised optimal-alpha targets.
+5. The runtime policy currently accepts the prototype feature dictionary. Align its schema with Person 2 before integrating it.
+6. The main app and `dsp/adaptive_filter.py` are not changed by this bundle.
