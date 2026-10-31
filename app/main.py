@@ -10,7 +10,7 @@ import pygame
 from app.orchestrator import IntentGlideOrchestrator
 from input.synthetic_generator import SyntheticInput
 from sandbox.scene import SandboxScene
-from visualization.dashboard import draw_dashboard
+from visualization.dashboard import draw_dashboard, draw_badge
 from visualization.diagnostics import format_diagnostics
 
 
@@ -32,7 +32,6 @@ def main():
     )
     pipeline = IntentGlideOrchestrator(analysis_rate=120)
     running = True
-    debug_counter = 0
     safety_override = False
     while running:
         for event in pygame.event.get():
@@ -42,12 +41,12 @@ def main():
                 if event.key == pygame.K_ESCAPE:
                     running = False
                 elif event.key in (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4):
-                    pipeline.mode = {
+                    pipeline.set_mode({
                         pygame.K_1: "raw",
                         pygame.K_2: "fixed",
                         pygame.K_3: "adaptive",
                         pygame.K_4: "full",
-                    }[event.key]
+                    }[event.key])
                 elif event.key == pygame.K_a:
                     mods = pygame.key.get_mods()
 
@@ -67,17 +66,7 @@ def main():
             targets=scene.targets,
             override=safety_override
         )
-        if debug_counter % 120 == 0:
-            print(
-                f"Oscillation: {result['features'].oscillation_score:.3f} | "
-                f"Frequency: {result['features'].dominant_frequency} | "
-                f"Periodicity: {result['features'].periodicity_confidence:.3f} | "
-                f"Alpha: {result['adaptive'].alpha:.3f} | "
-                f"Fixed: ({result['fixed'].x:.1f}, {result['fixed'].y:.1f}) | "
-                f"Adaptive: ({result['adaptive'].x:.1f}, {result['adaptive'].y:.1f})"
-                f"Safety Override: {'ON' if safety_override else 'OFF'}",
-            )
-        debug_counter += 1
+        
         raw, output = result["raw"], result["output"]
         scene.add_positions((raw.x, raw.y), (output.x, output.y))
         scene.draw(screen, (output.x, output.y))
@@ -90,7 +79,21 @@ def main():
             result["features"],
             result["decision"],
             result["processing_time_ms"],
+            filter_source=result["filter_source"],
+            cutoff_hz=result["cutoff_hz"],
         )
+        decision = result["decision"]
+        if result["override"]:
+            badge = ("OVERRIDDEN: direct control", (240, 110, 110))
+        elif pipeline.mode != "full":
+            badge = (f"ASSISTANCE OFF ({pipeline.mode})", (170, 170, 185))
+        elif decision.state == "target_confident":
+            badge = (f"ASSISTING: {decision.target_id}", (110, 225, 160))
+        elif decision.state == "target_ambiguous":
+            badge = ("ABSTAINING: target unclear", (245, 190, 90))
+        else:
+            badge = ("ASSISTANCE ON: watching", (110, 190, 245))
+        draw_badge(screen, *badge)
         draw_dashboard(screen, rows)
         pygame.display.flip()
         clock.tick(120)
