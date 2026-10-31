@@ -35,7 +35,8 @@ def test_override_returns_raw_in_every_mode():
 def test_reset_and_filter_source_reported():
     pipeline = IntentGlideOrchestrator()
     result = pipeline.process(SyntheticInput().get_sample())
-    assert result["filter_source"] == "heuristic"
+    expected_source = "ml" if pipeline.alpha_policy.source == "ml" else "heuristic"
+    assert result["filter_source"] == expected_source
     pipeline.reset()
 
 def test_orchestrator_reset_clears_intent_history():

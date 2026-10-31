@@ -36,3 +36,6 @@ data/processed/*
 !data/processed/.gitkeep
 ml/artifacts/*
 !ml/artifacts/.gitkeep
+IntentGlide_Person3_ML_Starter/
+IntentGlide_Person3_ML_Starter.zip
+step11_calculator.patch
