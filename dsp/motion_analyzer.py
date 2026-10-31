@@ -176,21 +176,22 @@ class MotionAnalyzer:
             p = pa / pa.sum()
             p = p[p > 0]
             entropy = float(-(p * np.log2(p)).sum() / math.log2(len(pa)))
+            entropy = float(np.clip(entropy, 0.0, 1.0))
 
         return MotionFeatures(
-            oscillation_score=osc_score,
-            dominant_frequency=dominant,
-            periodicity_confidence=periodicity,
-            directional_consistency=dir_consistency,
-            velocity=self._current_speed(),
-            acceleration=acceleration,
-            jerk=jerk,
-            spectral_entropy=float(np.clip(entropy, 0.0, 1.0)),
-            est_amplitude=float(est_amp),
-            x_band_power=x_band,
-            y_band_power=y_band,
-            valid=True,
-        )
+    oscillation_score=float(np.clip(osc_score, 0.0, 1.0)),
+    dominant_frequency=dominant,
+    periodicity_confidence=float(np.clip(periodicity, 0.0, 1.0)),
+    directional_consistency=float(np.clip(dir_consistency, 0.0, 1.0)),
+    velocity=self._current_speed(),
+    acceleration=acceleration,
+    jerk=jerk,
+    spectral_entropy=float(np.clip(entropy, 0.0, 1.0)),
+    est_amplitude=float(est_amp),
+    x_band_power=x_band,
+    y_band_power=y_band,
+    valid=True,
+)
 
     def _default_features(self) -> MotionFeatures:
         """Neutral output during warm-up. valid=False; dir. consistency 0 (not 'smooth')."""
@@ -200,6 +201,12 @@ class MotionAnalyzer:
             periodicity_confidence=0.0,
             directional_consistency=0.0,
             velocity=self._current_speed() if getattr(self, "_t", None) else 0.0,
+            acceleration=0.0,
+            jerk=0.0,
+            spectral_entropy=0.0,
+            est_amplitude=0.0,
+            x_band_power=0.0,
+            y_band_power=0.0,
             valid=False,
         )
 

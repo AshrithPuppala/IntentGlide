@@ -14,6 +14,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from shared.contracts import FEATURE_NAMES, InputSample, to_vector
 from dsp.fixed_filter import FixedFilter
 from dsp.motion_analyzer import MotionAnalyzer
+from dsp.adaptive_filter import AdaptiveFilter
+from shared.contracts import MotionFeatures
 
 
 # =========================================================== fixed filter
@@ -271,3 +273,181 @@ def test_processing_time_is_low():
         an.update(InputSample(t, 300 + 15 * math.sin(2 * math.pi * 8 * t), 200.0, "synthetic"))
     per_update_ms = (time.perf_counter() - t0) / n * 1000
     assert per_update_ms < 3.0, f"{per_update_ms:.2f} ms/update is too slow for a 60+ FPS UI"
+
+
+# ========================================================= adaptive filter
+def feats(osc=0.0, vel=0.0, dc=0.0, valid=True):
+    return MotionFeatures(oscillation_score=osc, dominant_frequency=8.0 if osc else None,
+                          periodicity_confidence=osc, directional_consistency=dc,
+                          velocity=vel, valid=valid)
+
+
+def settle_alpha(filt, f, alpha_ml=None, fs=120.0, seconds=1.5):
+    out = None
+    for i in range(int(seconds * fs)):
+        out = filt.update(InputSample(i / fs, 100.0, 100.0, "synthetic"), f, alpha_ml)
+    return out.alpha
+
+
+def test_adaptive_first_sample_passthrough_and_state():
+    filt = AdaptiveFilter()
+    out = filt.update(InputSample(0.0, 123.0, 45.0, "synthetic"), feats())
+    assert (out.x, out.y, out.mode) == (123.0, 45.0, "adaptive")
+    out = filt.update(InputSample(1 / 120, 223.0, 45.0, "synthetic"), feats())
+    assert 123.0 < out.x < 223.0          # moved toward the input, did not jump
+    assert out.y == pytest.approx(45.0)   # axes are independent
+
+
+def test_adaptive_constant_input_is_stable_and_step_converges():
+    filt = AdaptiveFilter()
+    for i in range(240):
+        out = filt.update(InputSample(i / 120, 50.0, 80.0, "synthetic"), feats())
+    assert (out.x, out.y) == (pytest.approx(50.0), pytest.approx(80.0))
+    for i in range(240, 480):
+        out = filt.update(InputSample(i / 120, 250.0, 80.0, "synthetic"), feats())
+    assert out.x == pytest.approx(250.0, abs=1.0)
+
+
+def test_ml_alpha_is_applied_at_nominal_rate():
+    assert settle_alpha(AdaptiveFilter(), feats(), alpha_ml=0.30) == pytest.approx(0.30, abs=0.01)
+
+
+def test_ml_alpha_is_clamped_to_readme_bounds():
+    assert settle_alpha(AdaptiveFilter(), feats(), alpha_ml=0.001) == pytest.approx(0.12, abs=0.005)
+    assert settle_alpha(AdaptiveFilter(), feats(), alpha_ml=5.0) == pytest.approx(0.85, abs=0.01)
+
+
+def test_policy_source_is_reported():
+    f = AdaptiveFilter()
+    f.update(InputSample(0.0, 1, 1, "synthetic"), feats(), alpha_ml=0.3)
+    assert f.last_source == "ml"
+    f.update(InputSample(0.01, 1, 1, "synthetic"), feats(), alpha_ml=None)
+    assert f.last_source == "heuristic"
+    out = f.update(InputSample(0.02, 1, 1, "synthetic"), feats(), alpha_ml=float("nan"))
+    assert f.last_source == "heuristic_fallback"
+    assert math.isfinite(out.alpha)
+
+
+def test_heuristic_strong_smoothing_for_oscillation_and_fast_for_flicks():
+    a_tremor = settle_alpha(AdaptiveFilter(), feats(osc=1.0))
+    a_flick = settle_alpha(AdaptiveFilter(), feats(osc=0.0, vel=900.0, dc=1.0))
+    a_idle = settle_alpha(AdaptiveFilter(), feats(osc=0.0))
+    a_warm = settle_alpha(AdaptiveFilter(), feats(valid=False))
+    assert a_tremor == pytest.approx(0.12, abs=0.01)
+    assert a_flick > 0.40 and a_idle > 0.40
+    assert a_tremor < a_warm < a_idle         # warm-up is neutral, not extreme
+    # fast but NOT straight (i.e. tremor-like speed) must not open the filter
+    assert settle_alpha(AdaptiveFilter(), feats(osc=1.0, vel=900.0, dc=0.1)) < 0.15
+
+
+def test_features_none_is_treated_as_warmup():
+    out = AdaptiveFilter().update(InputSample(0.0, 5.0, 5.0, "synthetic"), None)
+    assert math.isfinite(out.alpha)
+
+
+def test_alpha_changes_are_smooth():
+    """Flipping from 'tremor' to 'clean' features must not make alpha jump."""
+    filt = AdaptiveFilter()
+    prev, worst = None, 0.0
+    for i in range(240):
+        f = feats(osc=1.0) if i < 120 else feats(osc=0.0)
+        a = filt.update(InputSample(i / 120, 100.0, 100.0, "synthetic"), f).alpha
+        if prev is not None:
+            worst = max(worst, abs(a - prev))
+        prev = a
+    assert worst < 0.03, f"alpha jumped by {worst:.3f} in one sample"
+    assert prev > 0.40                       # ...but does get there
+
+
+@pytest.mark.parametrize("fs", [60.0, 120.0, 250.0])
+def test_smoothing_strength_is_rate_independent(fs):
+    """Same ML alpha -> same 8 Hz attenuation regardless of input rate."""
+    filt = AdaptiveFilter()
+    xs = []
+    for i in range(int(2.0 * fs)):
+        t = i / fs
+        xs.append(filt.update(InputSample(t, 50 * math.sin(2 * math.pi * 8 * t), 0.0, "synthetic"),
+                              feats(), alpha_ml=0.12).x)
+    ratio = np.max(np.abs(xs[int(1.0 * fs):])) / 50.0
+    assert ratio == pytest.approx(0.30, abs=0.07)
+
+
+def test_irregular_timestamps_do_not_wobble_the_cutoff():
+    """alpha legitimately follows dt, but the applied cutoff must stay steady."""
+    rng = np.random.default_rng(5)
+    filt, t, cutoffs = AdaptiveFilter(), 0.0, []
+    for _ in range(240):
+        t += (1 / 120) * rng.uniform(0.7, 1.3)
+        filt.update(InputSample(t, 100.0, 100.0, "synthetic"), feats(osc=0.5))
+        cutoffs.append(filt.cutoff_hz)
+    assert np.std(cutoffs[60:]) / np.mean(cutoffs[60:]) < 0.01
+
+
+def test_bad_samples_are_ignored_and_state_survives():
+    filt = AdaptiveFilter()
+    good = filt.update(InputSample(1.0, 100.0, 100.0, "synthetic"), feats())
+    assert filt.update(InputSample(1.0, 900.0, 900.0, "synthetic"), feats()) is good  # duplicate time
+    assert filt.update(InputSample(0.5, 900.0, 900.0, "synthetic"), feats()) is good  # backwards
+    assert filt.update(InputSample(1.1, float("nan"), 1.0, "synthetic"), feats()) is good
+    nxt = filt.update(InputSample(1.0 + 1 / 120, 110.0, 100.0, "synthetic"), feats())
+    assert math.isfinite(nxt.x) and 100.0 <= nxt.x <= 110.0
+
+
+def test_bad_first_sample_does_not_crash():
+    out = AdaptiveFilter().update(InputSample(0.0, float("nan"), 0.0, "synthetic"), feats())
+    assert math.isfinite(out.x)
+
+
+def test_reset_starts_a_fresh_trial():
+    filt = AdaptiveFilter()
+    for i in range(100):
+        filt.update(InputSample(i / 120, 500.0, 500.0, "synthetic"), feats(osc=1.0))
+    filt.reset()
+    out = filt.update(InputSample(0.0, 10.0, 20.0, "synthetic"), feats())
+    assert (out.x, out.y) == (10.0, 20.0)
+
+
+def test_processing_time_is_reported_and_small():
+    filt = AdaptiveFilter()
+    for i in range(500):
+        out = filt.update(InputSample(i / 120, 1.0, 1.0, "synthetic"), feats())
+    assert out.processing_time_ms is not None and 0.0 <= out.processing_time_ms < 1.0
+    assert filt.last_processing_time_ms == out.processing_time_ms
+
+
+# ------------------------------------------- closed loop: analyzer -> filter
+def closed_loop(fn, dur, alpha_min=0.12, fs=120.0):
+    an, af, ff = MotionAnalyzer(), AdaptiveFilter(alpha_min=alpha_min), FixedFilter()
+    ts, raw, ada, fix = [], [], [], []
+    for i in range(int(dur * fs)):
+        t = i / fs
+        s = InputSample(t, fn(t), 200.0, "synthetic")
+        ada.append(af.update(s, an.update(s)).x)
+        fix.append(ff.update(s).x)
+        ts.append(t); raw.append(s.x)
+    return np.array(ts), np.array(raw), np.array(ada), np.array(fix)
+
+
+def test_closed_loop_fast_reach_has_far_less_lag_than_fixed_filter():
+    reach = lambda t: 100.0 + min_jerk(t, 1.0, 0.5, 400.0)
+    t, raw, ada, fix = closed_loop(reach, 2.5)
+    m = (t > 0.9) & (t < 2.0)
+    ideal = np.array([reach(v) for v in t])
+    e_ada = np.sqrt(np.mean((ada[m] - ideal[m]) ** 2))
+    e_fix = np.sqrt(np.mean((fix[m] - ideal[m]) ** 2))
+    assert e_ada < 0.3 * e_fix
+
+
+def test_closed_loop_suppresses_stationary_oscillation():
+    x_fn = lambda t: 300.0 + 15.0 * math.sin(2 * math.pi * 8.0 * t)
+    t, raw, ada, fix = closed_loop(x_fn, 3.0)
+    m = t > 1.5
+    assert np.ptp(ada[m]) / 2 < 0.4 * 15.0           # at least ~2.5x reduction at default bounds
+
+
+def test_lower_alpha_min_matches_fixed_filter_attenuation():
+    """Documents the design trade-off: alpha_min=0.06 gives Butterworth-level suppression."""
+    x_fn = lambda t: 300.0 + 15.0 * math.sin(2 * math.pi * 8.0 * t)
+    t, raw, ada, fix = closed_loop(x_fn, 3.0, alpha_min=0.06)
+    m = t > 1.5
+    assert np.ptp(ada[m]) <= 1.25 * np.ptp(fix[m])
