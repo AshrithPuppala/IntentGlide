@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from time import perf_counter
 
-from dsp.adaptive_filter import AdaptiveExponentialFilter
-from dsp.fixed_filter import FixedButterworthFilter
+from dsp.adaptive_filter import AdaptiveFilter
+from dsp.fixed_filter import FixedFilter
 from dsp.motion_analyzer import MotionAnalyzer
 from interaction.assistance import apply_assistance
 from interaction.intent_controller import IntentController
@@ -15,9 +15,9 @@ class IntentGlideOrchestrator:
     MODES = ("raw", "fixed", "adaptive", "full")
 
     def __init__(self, analysis_rate: float = 120.0):
-        self.motion = MotionAnalyzer(analysis_rate=analysis_rate)
-        self.fixed = FixedButterworthFilter(sample_rate_hz=analysis_rate)
-        self.adaptive = AdaptiveExponentialFilter()
+        self.motion = MotionAnalyzer()
+        self.fixed = FixedFilter(cutoff_hz=3.0, nominal_fs=analysis_rate)
+        self.adaptive = AdaptiveFilter(nominal_fs=analysis_rate)
         self.intent = IntentController()
         self.mode = "full"
 
