@@ -1,6 +1,7 @@
 """Connect input, DSP, intent and safety modules through shared contracts."""
 from __future__ import annotations
 
+from pathlib import Path
 from time import perf_counter
 
 from dsp.adaptive_filter import AdaptiveFilter
@@ -8,6 +9,7 @@ from dsp.fixed_filter import FixedFilter
 from dsp.motion_analyzer import MotionAnalyzer
 from interaction.assistance import apply_assistance
 from interaction.intent_controller import IntentController
+from ml.filter_policy import FilterPolicy
 from shared.contracts import FilterOutput, IntentDecision, InputSample
 
 
@@ -20,9 +22,8 @@ class IntentGlideOrchestrator:
         self.adaptive = AdaptiveFilter(nominal_fs=analysis_rate)
         self.intent = IntentController()
         self.mode = "full"
-        # Person 3's ML model plugs in here later: any object with
-        # predict_alpha(features) -> float. None = rule-based heuristic.
-        self.alpha_policy = None
+        model_path = Path(__file__).resolve().parents[1] / "ml" / "artifacts" / "random_forest_alpha.joblib"
+        self.alpha_policy = FilterPolicy(model_path=model_path)
 
     def reset(self):
         """Clear all filter/analyzer state. Call on trial start, mode or source change."""
@@ -40,7 +41,11 @@ class IntentGlideOrchestrator:
         start = perf_counter()
         features = self.motion.update(sample)
         fixed_output = self.fixed.update(sample)
-        alpha_ml = self.alpha_policy.predict_alpha(features) if self.alpha_policy else None
+        alpha_ml = None
+        if self.alpha_policy:
+            predicted_alpha = self.alpha_policy.predict_alpha(features)
+            if self.alpha_policy.source == "ml":
+                alpha_ml = predicted_alpha
         adaptive_output = self.adaptive.update(sample, features, alpha_ml=alpha_ml)
         raw_output = FilterOutput(sample.x, sample.y, mode="raw")
 
@@ -72,6 +77,7 @@ class IntentGlideOrchestrator:
             "decision": decision,
             "override": override,
             "filter_source": self.adaptive.last_source,
+            "model_source": self.alpha_policy.source,
             "cutoff_hz": self.adaptive.cutoff_hz,
             "processing_time_ms": elapsed_ms,
         }

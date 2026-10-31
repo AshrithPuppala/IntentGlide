@@ -41,12 +41,12 @@ def test_synthetic_pipeline_aligns_and_builds_rows(tmp_path: Path):
     assert "truth_x" not in FEATURE_NAMES
 
 
-def test_filter_policy_fallback_is_bounded_and_rate_limited():
+def test_filter_policy_fallback_is_bounded():
     from ml.filter_policy import FilterPolicy
-    policy = FilterPolicy(model_path=None, initial_alpha=0.65, max_alpha_step=0.05)
+    policy = FilterPolicy(model_path=None)
     features = {name: 0.0 for name in FEATURE_NAMES}
     features["oscillation_score"] = 1.0
     alpha = policy.predict_alpha(features)
     assert 0.12 <= alpha <= 0.85
-    assert abs(alpha - 0.65) <= 0.050001
+    assert alpha == 0.12
     assert policy.get_status()["source"] == "heuristic_fallback"

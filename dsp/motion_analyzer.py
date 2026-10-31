@@ -73,6 +73,37 @@ class MotionAnalyzer:
             self._last = self._extract_features()
         return self._last
 
+    def analyze_window(self, xy, sample_rate: float = 120.0) -> MotionFeatures:
+        """Analyze a uniformly sampled XY window using the live feature calculation.
+
+        This batch entry point gives offline training the same terminal-window
+        calculation as ``update`` without recomputing an FFT for every sample.
+        """
+        points = np.asarray(xy, dtype=float)
+        if points.ndim != 2 or points.shape[1] != 2 or len(points) < 4:
+            raise ValueError("xy must have shape (n>=4, 2)")
+        if not np.isfinite(points).all():
+            raise ValueError("xy contains NaN or infinite values")
+        if not math.isfinite(sample_rate) or sample_rate <= 0:
+            raise ValueError("sample_rate must be positive and finite")
+
+        self.reset()
+        for index, (x, y) in enumerate(points):
+            timestamp = index / sample_rate
+            self._t.append(timestamp)
+            self._x.append(float(x))
+            self._y.append(float(y))
+
+        cutoff = self._t[-1] - self.window_sec
+        while len(self._t) >= 2 and self._t[1] <= cutoff:
+            self._t.popleft()
+            self._x.popleft()
+            self._y.popleft()
+
+        span = self._t[-1] - self._t[0]
+        self._last = self._extract_features() if span >= self.min_span_sec else self._default_features()
+        return self._last
+
     # ------------------------------------------------------------ internals
     def _current_speed(self) -> float:
         """Speed over the last ~velocity_horizon_sec of raw samples (px/s)."""
