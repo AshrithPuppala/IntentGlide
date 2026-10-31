@@ -233,23 +233,26 @@ class Desktop:
         del self.output_trail[:-trail_limit]
 
     def _make_wallpaper(self) -> pygame.Surface:
-        surf = pygame.Surface((self.width, self.height))
-        top, bottom = theme.BG_TOP, theme.BG_BOTTOM
-        for y in range(self.height):
-            t = y / max(1, self.height - 1)
-            pygame.draw.line(surf, tuple(int(top[i] + (bottom[i] - top[i]) * t) for i in range(3)),
-                             (0, y), (self.width, y))
-        glow = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
-        for (fx, fy, radius, color) in (
-            (0.78, 0.26, 260, (96, 165, 250)),
-            (0.58, 0.70, 220, (150, 110, 240)),
-            (0.95, 0.88, 150, (60, 200, 170)),
-        ):
-            # Concentric low-alpha discs build a soft radial glow.
-            for r in range(radius, 0, -6):
-                alpha = int(3 + 22 * (1 - r / radius) ** 1.6)
-                pygame.draw.circle(glow, (*color, alpha), (int(self.width * fx), int(self.height * fy)), r)
-        surf.blit(glow, (0, 0))
+        """Windows-11-style "bloom" wallpaper: deep-blue gradient with soft, overlapping petals (drawn once)."""
+        w, h = self.width, self.height
+        surf = pygame.Surface((w, h))
+        top, bottom = (16, 58, 148), (4, 12, 46)
+        for y in range(h):
+            t = y / max(1, h - 1)
+            pygame.draw.line(surf, tuple(int(top[i] + (bottom[i] - top[i]) * t) for i in range(3)), (0, y), (w, y))
+        layer = pygame.Surface((w, h), pygame.SRCALPHA)
+        cx, cy, size = int(w * 0.62), int(h * 0.50), int(min(w, h) * 0.98)
+        palette = [(30, 110, 230), (64, 154, 246), (104, 190, 255), (42, 94, 214)]
+        for k in range(8):
+            petal = pygame.Surface((size, size), pygame.SRCALPHA)
+            for scale, alpha in ((1.0, 22), (0.86, 30), (0.72, 40), (0.58, 52)):   # nested = soft edge
+                pw, ph = int(size * 0.5 * scale), int(size * 0.21 * scale)
+                pygame.draw.ellipse(petal, (*palette[k % 4], alpha), (size // 2, size // 2 - ph // 2, pw, ph))
+            petal = pygame.transform.rotozoom(petal, k * 45 + 12, 1.0)
+            layer.blit(petal, petal.get_rect(center=(cx, cy)))
+        for r in range(150, 0, -6):                                                  # bright core glow
+            pygame.draw.circle(layer, (150, 210, 255, int(2 + 20 * (1 - r / 150) ** 1.8)), (cx, cy), r)
+        surf.blit(layer, (0, 0))
         return surf
 
     def draw(self, surface, cursor_xy=None):
@@ -259,11 +262,11 @@ class Desktop:
 
         for icon in self.icons:
             if icon.hovered:
-                theme.arect(surface, (255, 255, 255, 34), icon.rect, 8)
-                pygame.draw.rect(surface, (200, 220, 255), icon.rect, width=1, border_radius=8)
-            tile = pygame.Rect(icon.x + (icon.w - self.TILE) / 2, icon.y + 8, self.TILE, self.TILE)
+                theme.arect(surface, (255, 255, 255, 40), icon.rect, 6)               # light hover box, like Windows
+                pygame.draw.rect(surface, (190, 214, 255), icon.rect, width=1, border_radius=6)
+            tile = pygame.Rect(icon.x + (icon.w - self.TILE) / 2, icon.y + 6, self.TILE, self.TILE)
             draw_app_icon(surface, icon.id.split(":")[1], tile)
-            theme.text(surface, icon.label, (icon.x + icon.w / 2, tile.bottom + 8), 20,
+            theme.text(surface, icon.label, (icon.x + icon.w / 2, tile.bottom + 6), 20,
                        theme.TEXT, anchor="midtop", shadow=True)
 
         top = self.windows[-1] if self.windows else None
