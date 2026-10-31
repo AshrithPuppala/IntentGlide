@@ -1,7 +1,8 @@
 """Launch the IntentGlide Pygame sandbox.
 
 Controls:
-  1 = raw, 2 = fixed, 3 = adaptive, 4 = full system
+  1 = raw, 2 = fixed Butterworth, 3 = ML adaptive EMA,
+  4 = full intent-assisted system, 5 = ML adaptive Butterworth (Architecture C)
   A = standard targets, M = ambiguous targets, B = small, L = large
   D = desktop scene, T = test-target scene
   S = switch input: synthetic <-> real mouse, V = tremor on/off (mouse input)
@@ -23,7 +24,7 @@ from visualization.panel import PANEL_W, draw_side_panel
 def main():
     pygame.init()
     width, height = 1100, 700
-    area_w = width - PANEL_W            # desktop area; the side panel is docked on the right
+    area_w = width - PANEL_W
     screen = pygame.display.set_mode((width, height))
     pygame.display.set_caption("IntentGlide — Adaptive Cursor Assistance Sandbox")
     clock = pygame.time.Clock()
@@ -31,21 +32,18 @@ def main():
     test_scene = SandboxScene(width=area_w, height=height - 48)
     desktop = Desktop(width=area_w, height=height)
     scene = desktop
-    pygame.mouse.set_visible(False)   # we draw the processed cursor ourselves
+    pygame.mouse.set_visible(False)
     generator = SyntheticInput(
-    start_x=100,
-    start_y=180,
-    speed=120,
-    tremor_freq=8,
-    tremor_amp=7,
-    bounds=(0, 0, area_w, height - 48),
+        start_x=100, start_y=180, speed=120, tremor_freq=8, tremor_amp=7,
+        bounds=(0, 0, area_w, height - 48),
     )
     disturbed_mouse = DisturbedMouse(MouseProvider())
     inputs = InputManager(synthetic=generator, mouse=disturbed_mouse)
     pipeline = IntentGlideOrchestrator(analysis_rate=120)
-    cursor_xy = (0.0, 0.0)            # last processed cursor position (clicks land here)
+    cursor_xy = (0.0, 0.0)
     running = True
     safety_override = False
+
     while running:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -53,16 +51,16 @@ def main():
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
                     running = False
-                elif event.key in (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4):
+                elif event.key in (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5):
                     pipeline.set_mode({
                         pygame.K_1: "raw",
                         pygame.K_2: "fixed",
                         pygame.K_3: "adaptive",
                         pygame.K_4: "full",
+                        pygame.K_5: "ml_butterworth",
                     }[event.key])
                 elif event.key == pygame.K_a:
                     mods = pygame.key.get_mods()
-
                     if (mods & pygame.KMOD_CTRL) and (mods & pygame.KMOD_SHIFT):
                         safety_override = not safety_override
                     else:
@@ -83,16 +81,11 @@ def main():
                 elif event.key == pygame.K_l:
                     scene.set_layout("large")
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                # The click lands where the PROCESSED cursor is, not the raw mouse.
                 if hasattr(scene, "click"):
                     scene.click(*cursor_xy)
+
         sample = inputs.get_sample()
-        result = pipeline.process(
-            sample,
-            targets=scene.targets,
-            override=safety_override
-        )
-        
+        result = pipeline.process(sample, targets=scene.targets, override=safety_override)
         raw, output = result["raw"], result["output"]
         cursor_xy = (output.x, output.y)
         scene.add_positions((raw.x, raw.y), cursor_xy)
@@ -110,7 +103,7 @@ def main():
             "source": inputs.active,
             "tremor": disturbed_mouse.enabled,
         })
-        draw_cursor(screen, cursor_xy)        # drawn last so it stays above the panel
+        draw_cursor(screen, cursor_xy)
         pygame.display.flip()
         clock.tick(120)
 

@@ -1,6 +1,5 @@
 from dataclasses import dataclass
 from typing import Literal, Optional, List, Tuple
-import numpy as np
 
 # Feature names in the exact order required for Person 3's ML regressor
 FEATURE_NAMES: Tuple[str, ...] = (
@@ -93,3 +92,45 @@ class IntentDecision:
     confidence: float                  # normalized 0.0–1.0
     assist_dx: float                   # bounded pixels
     assist_dy: float                   # bounded pixels
+
+
+# Compatibility for Person 1 synthetic_generator.py
+@dataclass
+class GroundTruth:
+    timestamp: float
+    x: float
+    y: float
+    progress: float
+    arrived: bool
+
+
+# Compatibility for Person 1 labels.py
+@dataclass
+class GroundTruthLabel:
+    trial_id: int
+    timestamp: float
+    intended_target_id: Optional[str]
+    true_state: str
+    phase: str
+    progress: float
+    truth_x: float
+    truth_y: float
+    dist_to_target: float
+    tremor_active: bool
+    tremor_freq: float
+    tremor_amp: float
+    ambiguous: bool
+    rival_target_id: Optional[str]
+    override: bool = False
+
+@dataclass
+class TrialResult:
+    trial_id: int
+    intended_target_id: str
+    clicked_target_id: Optional[str]
+    outcome: str
+    success: bool
+    start_time: float
+    end_time: float
+    elapsed: float
+    miss_count: int = 0
