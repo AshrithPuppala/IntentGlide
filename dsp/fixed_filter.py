@@ -1,4 +1,5 @@
 import math
+import time
 from shared.contracts import InputSample, FilterOutput
 
 class _Biquad:
@@ -26,8 +27,7 @@ class FixedFilter:
         self.fc = cutoff_hz
         self.fs = nominal_fs
         
-        # Precompute coefficients once to guarantee IIR stability 
-        # and prevent redundant trig calculations every frame.
+        # Precompute coefficients once
         K = math.tan(math.pi * self.fc / self.fs)
         Q = 1 / math.sqrt(2)
         n = 1 / (1 + K / Q + K * K)
@@ -42,17 +42,32 @@ class FixedFilter:
         self.fy = _Biquad(b0, b1, b2, a1, a2)
 
     def reset(self):
-        """Reset the filter state to handle breaks in drawing or target switching."""
+        """Reset the filter state."""
         self.fx.initialized = False
         self.fy.initialized = False
         self.fx.z1 = self.fx.z2 = 0.0
         self.fy.z1 = self.fy.z2 = 0.0
 
     def update(self, s: InputSample) -> FilterOutput:
-        # Pass the raw coordinates through the fixed-coefficient biquad.
+        # Measure processing time to satisfy the new evaluation metrics
+        t0 = time.perf_counter()
+        
+        out_x = self.fx.step(s.x)
+        out_y = self.fy.step(s.y)
+        
+        t1 = time.perf_counter()
+        processing_time_ms = (t1 - t0) * 1000.0
+        
         return FilterOutput(
-            x=self.fx.step(s.x),
-            y=self.fy.step(s.y),
+            x=out_x,
+            y=out_y,
             alpha=None, 
-            mode="fixed"
+            mode="fixed",
+            processing_time_ms=processing_time_ms
         )
+
+if __name__ == "__main__":
+    # Self-test
+    f = FixedFilter()
+    sample = InputSample(timestamp=1.0, x=100.0, y=200.0, source="synthetic")
+    print(f.update(sample))
