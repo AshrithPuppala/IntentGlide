@@ -17,11 +17,13 @@ class MotionFeatures:
     periodicity_confidence: float      # normalized 0.0–1.0
     directional_consistency: float     # normalized 0.0–1.0
     velocity: float                    # pixels per second
-    # Planned ML features (with defaults so baseline tests don't break)
     acceleration: Optional[float] = None
     jerk: Optional[float] = None
     spectral_entropy: Optional[float] = None
     est_amplitude: Optional[float] = None
+    x_band_power: Optional[float] = None
+    y_band_power: Optional[float] = None
+    valid: bool = True
 
 @dataclass
 class FilterOutput:
