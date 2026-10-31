@@ -93,3 +93,45 @@ class IntentDecision:
     confidence: float                  # normalized 0.0–1.0
     assist_dx: float                   # bounded pixels
     assist_dy: float                   # bounded pixels
+@dataclass
+class TrialResult:
+    trial_id: int
+    intended_target_id: str
+    clicked_target_id: Optional[str]
+    outcome: Literal["success", "wrong_target", "miss", "timeout"]
+    success: bool
+    start_time: float
+    end_time: float
+    elapsed: float
+    miss_count: int
+
+
+@dataclass
+class GroundTruth:
+    timestamp: float
+    x: float
+    y: float
+    progress: float
+    arrived: bool
+
+
+@dataclass
+class GroundTruthLabel:
+    trial_id: int
+    timestamp: float
+    intended_target_id: str
+    true_state: Literal[
+        "stable", "oscillation_detected", "target_confident",
+        "target_ambiguous", "override"
+    ]
+    phase: Literal["onset", "transit", "approach", "dwell"]
+    progress: float
+    truth_x: float
+    truth_y: float
+    dist_to_target: float
+    tremor_active: bool
+    tremor_freq: float
+    tremor_amp: float
+    ambiguous: bool
+    rival_target_id: Optional[str]
+    override: bool
