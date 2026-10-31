@@ -42,8 +42,15 @@ def test_synthetic_generator_uses_120_hz_clock():
     assert abs(
         (samples[1].timestamp - samples[0].timestamp) - 1 / 120
     ) < 1e-9
+
 def test_synthetic_monotonic_and_in_bounds():
-    gen = SyntheticInput(speed=500)
+    current_time = [0.0]
+
+    def clock():
+        current_time[0] += 0.001
+        return current_time[0]
+
+    gen = SyntheticInput(speed=500, clock=clock)
     prev = -1.0
 
     for _ in range(50):
@@ -52,7 +59,6 @@ def test_synthetic_monotonic_and_in_bounds():
         assert -20 <= s.x <= 1300
         assert -20 <= s.y <= 740
         prev = s.timestamp
-
 
 def test_synthetic_frequency():
     import numpy as np
