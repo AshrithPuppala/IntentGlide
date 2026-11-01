@@ -35,7 +35,8 @@ def test_training_extractor_matches_live_motion_analyzer():
 
 def test_filter_policy_uses_live_motion_features_and_rejects_old_schema(tmp_path: Path):
     model_path = tmp_path / "model.joblib"
-    joblib.dump({"model": ConstantAlphaModel(), "feature_names": FEATURE_NAMES}, model_path)
+    joblib.dump({"model": ConstantAlphaModel(), "feature_names": FEATURE_NAMES,
+                 "status": "evaluated_candidate", "target": "alpha_optimal"}, model_path)
     policy = FilterPolicy(model_path)
     features = MotionFeatures(0.2, 8.0, 0.8, 0.7, 120.0)
     assert policy.predict_alpha(features) == 0.5

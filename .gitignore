@@ -34,8 +34,16 @@ data/generated/*
 !data/generated/.gitkeep
 data/processed/*
 !data/processed/.gitkeep
+data/user_profiles/*.json
+data/user_preferences.json
+data/calibration_sessions/*.jsonl
+data/calibration_sessions/*.csv
+data/interaction_sessions/*.jsonl
+data/exports/*.json
 ml/artifacts/*
 !ml/artifacts/.gitkeep
+ml/candidates/*
+!ml/candidates/.gitkeep
 IntentGlide_Person3_ML_Starter/
 IntentGlide_Person3_ML_Starter.zip
 step11_calculator.patch

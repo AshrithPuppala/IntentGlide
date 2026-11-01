@@ -86,12 +86,14 @@ def train(dataset: Path, output_dir: Path, min_cutoff: float = 1.5,
         model.fit(X[train_idx], y[train_idx])
         artifact = {
             "model": model,
+            "schema_version": 1,
+            "model_version": f"filter-cutoff-{name}-1",
             "model_name": name,
             "feature_names": list(FEATURE_NAMES),
             "target": TARGET,
             "cutoff_bounds_hz": [float(min_cutoff), float(max_cutoff)],
             "filter": "second_order_butterworth_lowpass",
-            "status": "synthetic_development_model_not_real_world_validated",
+            "status": "candidate_requires_evaluation_before_promotion",
         }
         joblib.dump(artifact, output_dir / f"{name}_cutoff.joblib")
         results[name] = {
@@ -129,7 +131,7 @@ def train(dataset: Path, output_dir: Path, min_cutoff: float = 1.5,
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", type=Path, default=Path("data/processed/butterworth_training_dataset.csv"))
-    parser.add_argument("--output-dir", type=Path, default=Path("ml/artifacts"))
+    parser.add_argument("--output-dir", type=Path, default=Path("ml/candidates/butterworth"))
     parser.add_argument("--min-cutoff", type=float, default=1.5)
     parser.add_argument("--max-cutoff", type=float, default=18.0)
     parser.add_argument("--group-column", type=str, default="profile_id",

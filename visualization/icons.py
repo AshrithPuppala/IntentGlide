@@ -11,15 +11,19 @@ TILE_COLORS = {
     "notepad": (244, 192, 72),
     "calculator": (48, 190, 168),
     "settings": (112, 128, 206),
+    "benchmark": (106, 146, 224),
 }
 
 
 def draw_app_icon(surface, key: str, rect):
     rect = pygame.Rect(rect)
-    theme.rrect(surface, TILE_COLORS[key], rect, 16)
+    tile = TILE_COLORS.get(key, (96, 132, 196))
+    theme.rrect(surface, tile, rect, 16)
     theme.arect(surface, (255, 255, 255, 38), (rect.x, rect.y, rect.w, rect.h // 2), 16)  # soft sheen
     cx, cy = rect.center
-    {"notepad": _notepad, "calculator": _calculator, "settings": _gear}[key](surface, cx, cy, TILE_COLORS[key])
+    drawer = {"notepad": _notepad, "calculator": _calculator, "settings": _gear,
+              "benchmark": _benchmark}.get(key, _generic)
+    drawer(surface, cx, cy, tile)
 
 
 def _notepad(surface, cx, cy, tile):
@@ -47,6 +51,24 @@ def _gear(surface, cx, cy, tile):
         pygame.draw.circle(surface, (248, 249, 253), (cx + math.cos(a) * 16, cy + math.sin(a) * 16), 4)
     pygame.draw.circle(surface, (248, 249, 253), (cx, cy), 14)
     pygame.draw.circle(surface, tile, (cx, cy), 6)
+
+
+def _benchmark(surface, cx, cy, tile):
+    """A small, legible chart glyph for the benchmark desktop app."""
+    baseline = cy + 18
+    pygame.draw.line(surface, (246, 248, 255), (cx - 21, baseline), (cx + 21, baseline), 3)
+    for offset, height, color in ((-14, 17, (224, 235, 255)), (0, 29, (245, 248, 255)),
+                                  (14, 23, (196, 220, 255))):
+        theme.rrect(surface, color, (cx + offset - 4, baseline - height, 8, height), 2)
+
+
+def _generic(surface, cx, cy, tile):
+    """Keep future demo apps drawable even before they get a custom glyph."""
+    page = pygame.Rect(cx - 15, cy - 19, 30, 38)
+    theme.rrect(surface, (248, 249, 253), page, 4)
+    for row in range(3):
+        y = page.y + 11 + row * 8
+        pygame.draw.line(surface, tile, (page.x + 6, y), (page.right - 6, y), 3)
 
 
 def draw_start_glyph(surface, rect, hovered: bool = False):

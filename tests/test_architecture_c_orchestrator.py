@@ -7,7 +7,8 @@ def test_orchestrator_exposes_ml_butterworth_mode_even_without_model():
     pipeline.set_mode("ml_butterworth")
     result = pipeline.process(InputSample(0.0, 100.0, 120.0, "synthetic"))
     assert pipeline.mode == "ml_butterworth"
-    assert result["output"] is result["ml_butterworth"]
+    assert (result["output"].x, result["output"].y) == (result["ml_butterworth"].x,
+                                                          result["ml_butterworth"].y)
     assert result["filter_source"] in {"warmup", "heuristic", "heuristic_fallback", "ml"}
     assert result["cutoff_hz"] is not None
 

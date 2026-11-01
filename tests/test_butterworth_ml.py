@@ -25,6 +25,7 @@ def test_cutoff_policy_loads_schema_and_predicts(tmp_path: Path):
         "feature_names": list(FEATURE_NAMES),
         "target": "cutoff_optimal_hz",
         "cutoff_bounds_hz": [1.5, 18.0],
+        "status": "evaluated_candidate",
     }, path)
     policy = ButterworthCutoffPolicy(path)
     features = MotionFeatures(0.6, 8.0, 0.8, 0.4, 100.0)

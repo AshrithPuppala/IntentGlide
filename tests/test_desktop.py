@@ -1,4 +1,5 @@
 from sandbox.desktop import Desktop
+from sandbox.widgets import Widget
 
 
 def test_icons_are_targets_and_open_windows():
@@ -36,6 +37,16 @@ def test_only_top_window_controls_are_targets():
     d.open_window("settings")
     ids = {t.id for t in d.targets}
     assert "settings:close" in ids and "notepad:close" not in ids
+
+
+def test_close_icon_gets_extra_dwell_area_only_when_isolated():
+    d = Desktop()
+    d.open_window("calculator")
+    close = d.windows[-1].close_btn
+    assert d.dwell_enlargement_for(close.id) == 16
+    d.windows[-1].widgets.append(Widget("calculator:nearby", close.x-28, close.y,
+                                        24, 24, "…"))
+    assert d.dwell_enlargement_for(close.id) == 0
 
 
 def test_start_menu_opens_apps_and_click_away_closes():

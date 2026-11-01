@@ -85,11 +85,13 @@ def train_all(dataset_path: Path, output_dir: Path):
         model.fit(X_train, y_train)
         artifact = {
             "model": model,
+            "schema_version": 1,
+            "model_version": f"filter-alpha-{name}-1",
             "model_name": name,
             "feature_names": FEATURE_NAMES,
             "target": TARGET,
             "alpha_bounds": [0.12, 0.85],
-            "status": "synthetic_development_model_not_real_world_validated",
+            "status": "candidate_requires_evaluation_before_promotion",
         }
         joblib.dump(artifact, output_dir / f"{name}_alpha.joblib")
         results[name] = {
@@ -121,7 +123,7 @@ def train_all(dataset_path: Path, output_dir: Path):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", type=Path, default=Path("data/processed/training_dataset.csv"))
-    parser.add_argument("--output-dir", type=Path, default=Path("ml/artifacts"))
+    parser.add_argument("--output-dir", type=Path, default=Path("ml/candidates/filtering"))
     args = parser.parse_args()
     train_all(args.dataset, args.output_dir)
 

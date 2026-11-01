@@ -29,7 +29,7 @@ def evaluate(dataset: Path, artifact_dir: Path):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", type=Path, default=Path("data/processed/training_dataset.csv"))
-    parser.add_argument("--artifact-dir", type=Path, default=Path("ml/artifacts"))
+    parser.add_argument("--artifact-dir", type=Path, default=Path("ml/candidates/filtering"))
     args = parser.parse_args()
     evaluate(args.dataset, args.artifact_dir)
 
